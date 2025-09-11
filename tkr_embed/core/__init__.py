@@ -1,0 +1,1 @@
+"""Core MLX embedding components"""
