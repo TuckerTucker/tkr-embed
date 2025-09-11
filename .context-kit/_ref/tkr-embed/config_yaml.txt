@@ -1,0 +1,30 @@
+# Configuration for RzenEmbed-v1-7B on M1 MacBook Pro
+
+# Configuration for 16GB M1 MacBook Pro
+# Model downloaded from Hugging Face: your-username/RzenEmbed-v1-7B-GGUF
+
+model:
+  path: "./models/rzen-embed-v1-7b-q4_0.gguf"  # Downloaded from HF
+  context_length: 4096
+  gpu_layers: -1  # Use all GPU layers (Metal acceleration)
+  threads: 8     # M1 has 8 performance cores
+  batch_size: 32  # Adjust based on available memory
+
+quantization:
+  enabled: false  # Not needed - file is already quantized
+  type: "q4_0"   # Documentation only - shows what quantization was used
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  workers: 1
+
+embedding:
+  normalize: true
+  pooling: "mean"
+  max_tokens: 512
+
+logging:
+  level: "INFO"
+  file: "./logs/embedding_server.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
