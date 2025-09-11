@@ -1,5 +1,6 @@
 """
 FastAPI server for MLX multimodal embedding service
+Production-ready with authentication, rate limiting, and error handling
 """
 
 import logging
@@ -10,7 +11,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -18,33 +19,52 @@ import mlx.core as mx
 import numpy as np
 from PIL import Image
 
+# Core components
 from tkr_embed.core.model_manager import OpsMMEmbeddingMLX
 from tkr_embed.utils.memory_manager import MemoryManager
+from tkr_embed.utils.lru_cache import CachedEmbeddingProcessor, EmbeddingCache
+from tkr_embed.core.batch_processor import BatchProcessor, BatchConfig
+
+# Production features
+from tkr_embed.config import get_config
+from tkr_embed.api.auth import authenticate, optional_auth, APIKey, create_api_key
+from tkr_embed.api.rate_limiter import apply_rate_limit, create_rate_limit_headers, rate_limiter
+from tkr_embed.api.error_handlers import setup_error_handlers, SafeModelOperation, raise_model_not_ready
+
+# API models
 from tkr_embed.api.models import (
     TextEmbeddingRequest, MultimodalEmbeddingRequest, EmbeddingResponse,
     HealthResponse, ModelInfoResponse, SimilarityRequest, SimilarityResponse,
     ErrorResponse
 )
 
-# Configure logging
+# Admin endpoints
+from tkr_embed.api.admin import admin_router, setup_admin_key
+
+# Load configuration
+config = get_config()
+
+# Configure logging based on config
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=getattr(logging, config.logging.level.upper()),
+    format=config.logging.format
 )
 logger = logging.getLogger(__name__)
 
 # Global instances
 model_instance: Optional[OpsMMEmbeddingMLX] = None
 memory_manager: Optional[MemoryManager] = None
+cached_processor: Optional[CachedEmbeddingProcessor] = None
+batch_processor: Optional[BatchProcessor] = None
 server_start_time: float = 0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage model lifecycle during server startup/shutdown"""
-    global model_instance, memory_manager, server_start_time
+    """Manage model lifecycle and production components during server startup/shutdown"""
+    global model_instance, memory_manager, cached_processor, batch_processor, server_start_time
     
-    logger.info("🚀 Starting MLX Multimodal Embedding Server")
+    logger.info("🚀 Starting MLX Multimodal Embedding Server (Production Mode)")
     server_start_time = time.time()
     
     try:
@@ -53,18 +73,52 @@ async def lifespan(app: FastAPI):
         memory_manager = MemoryManager()
         memory_manager.optimize_for_inference()
         
-        # Initialize model
+        # Initialize model with configuration
         logger.info("Loading multimodal embedding model...")
-        quantization = memory_manager.memory_profile["quantization"]
-        
         model_instance = OpsMMEmbeddingMLX(
-            model_path="OpenSearch-AI/Ops-MM-embedding-v1-7B",
-            quantization=quantization
+            model_path=config.model.model_path,
+            quantization=config.model.quantization,
+            cache_dir=config.model.cache_dir
         )
         
-        # Note: For now we'll skip the actual model loading to avoid download times
-        # await model_instance.load_model()
-        logger.info("✅ Server startup complete (model loading deferred)")
+        # Load model if not in testing mode
+        if config.environment.value != "testing":
+            logger.info("Loading model (this may take a few minutes)...")
+            await model_instance.load_model()
+            logger.info("✅ Model loaded successfully")
+        else:
+            logger.info("Skipping model loading in testing mode")
+        
+        # Initialize production components
+        if config.cache.enabled:
+            logger.info("Initializing embedding cache...")
+            cache = EmbeddingCache(
+                max_size=config.cache.max_size,
+                ttl=config.cache.ttl_seconds
+            )
+            cached_processor = CachedEmbeddingProcessor(model_instance, cache)
+            logger.info("✅ Embedding cache initialized")
+        
+        # Initialize batch processor
+        logger.info("Initializing batch processor...")
+        batch_config = BatchConfig(
+            max_batch_size=8,
+            dynamic_batching=True
+        )
+        batch_processor = BatchProcessor(model_instance, batch_config)
+        logger.info("✅ Batch processor initialized")
+        
+        # Start rate limiter cleanup task
+        if config.rate_limit.enabled:
+            logger.info("Starting rate limiter...")
+            rate_limiter.start_cleanup_task()
+            logger.info("✅ Rate limiter started")
+        
+        # Setup initial admin key if needed
+        setup_admin_key()
+        
+        startup_time = time.time() - server_start_time
+        logger.info(f"✅ Server startup complete in {startup_time:.1f}s")
         
         yield
         
@@ -75,44 +129,47 @@ async def lifespan(app: FastAPI):
     finally:
         # Cleanup
         logger.info("👋 Shutting down server...")
+        
+        # Stop rate limiter
+        if config.rate_limit.enabled:
+            rate_limiter.stop_cleanup_task()
+            
+        # Cleanup model
         if model_instance:
             del model_instance
+            
+        # Cleanup memory manager
         if memory_manager:
             memory_manager.cleanup_memory()
+            
         logger.info("Cleanup complete")
 
 
-# Create FastAPI app
+# Create FastAPI app with production configuration
 app = FastAPI(
     title="MLX Multimodal Embedding Server",
-    description="High-performance multimodal embedding service optimized for Apple Silicon",
-    version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan
+    description="Production-ready multimodal embedding service optimized for Apple Silicon",
+    version="1.0.0",
+    docs_url="/docs" if config.debug else None,  # Disable docs in production
+    redoc_url="/redoc" if config.debug else None,
+    lifespan=lifespan,
+    debug=config.debug
 )
 
-# Add CORS middleware
+# Setup comprehensive error handling
+setup_error_handlers(app, include_traceback=config.debug)
+
+# Add CORS middleware with configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=config.security.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=config.security.cors_methods,
+    allow_headers=config.security.cors_headers,
 )
 
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler"""
-    logger.error(f"Unhandled exception: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content=ErrorResponse(
-            error="Internal server error",
-            detail=str(exc)
-        ).model_dump()
-    )
+# Include admin router
+app.include_router(admin_router)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -160,21 +217,32 @@ async def model_info():
 
 
 @app.post("/embed/text", response_model=EmbeddingResponse)
-async def embed_text(request: TextEmbeddingRequest):
-    """Generate embeddings for text inputs"""
+async def embed_text(
+    request: TextEmbeddingRequest,
+    http_request: Request,
+    api_key: APIKey = Depends(authenticate if config.security.require_api_key else optional_auth)
+):
+    """Generate embeddings for text inputs (requires authentication)"""
     start_time = time.time()
     
+    # Apply rate limiting
+    if config.rate_limit.enabled:
+        identifier = f"{api_key.name if api_key else 'anonymous'}:{http_request.client.host if http_request.client else 'unknown'}"
+        await apply_rate_limit(http_request, identifier)
+    
     try:
-        if not model_instance:
-            raise HTTPException(status_code=503, detail="Model not initialized")
-        
-        if not model_instance.is_ready():
-            raise HTTPException(status_code=503, detail="Model not ready")
+        # Safe model operation with error handling
+        with SafeModelOperation("text_embedding", model_instance):
+            if not model_instance or not model_instance.is_ready():
+                raise_model_not_ready()
+                
+            logger.info(f"Processing {len(request.texts)} text inputs for {api_key.name if api_key else 'anonymous'}")
             
-        logger.info(f"Processing {len(request.texts)} text inputs with real model")
-        
-        # Generate real embeddings using the Qwen2VL model
-        embeddings_array = model_instance.encode_text(request.texts)
+            # Use cached processor if available, otherwise direct model
+            if cached_processor and config.cache.enabled:
+                embeddings_array = cached_processor.encode_text(request.texts)
+            else:
+                embeddings_array = model_instance.encode_text(request.texts)
         
         # Convert to list format and apply normalization if requested
         embeddings_list = []
@@ -186,16 +254,28 @@ async def embed_text(request: TextEmbeddingRequest):
         
         processing_time = time.time() - start_time
         
-        return EmbeddingResponse(
+        # Create response with rate limit headers
+        response_data = EmbeddingResponse(
             embeddings=embeddings_list,
             shape=[len(request.texts), embeddings_array.shape[1]],
             model="Ops-MM-embedding-v1-7B",
             processing_time=processing_time
         )
         
+        # Add rate limiting headers if enabled
+        if config.rate_limit.enabled and api_key:
+            rate_headers = create_rate_limit_headers(f"{api_key.name}:{http_request.client.host if http_request.client else 'unknown'}")
+            return JSONResponse(
+                content=response_data.model_dump(),
+                headers=rate_headers
+            )
+        
+        return response_data
+        
     except Exception as e:
         logger.error(f"Text embedding failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # The error will be handled by the comprehensive error handler
+        raise
 
 
 @app.post("/embed/image", response_model=EmbeddingResponse)

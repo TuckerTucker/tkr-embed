@@ -1,0 +1,71 @@
+# MLX Multimodal Embedding Server Configuration
+# Production-ready configuration with security and performance optimizations
+
+# Server Environment
+environment: "production"  # development, production, testing
+debug: false
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  reload: false
+  log_level: "INFO"
+  access_log: true
+  timeout_keep_alive: 65
+
+# Model Configuration
+model:
+  model_path: "OpenSearch-AI/Ops-MM-embedding-v1-7B"
+  quantization: "auto"  # auto, q4, q8, none
+  cache_dir: "./models"
+  device: "auto"  # auto, cpu, gpu
+  max_sequence_length: 2048
+  trust_remote_code: true
+
+# Security Configuration
+security:
+  require_api_key: true
+  require_https: false  # Set to true in production with SSL
+  api_key_header: "X-API-Key"
+  cors_origins: ["*"]  # Restrict in production
+  cors_methods: ["GET", "POST"]
+  cors_headers: ["*"]
+
+# Rate Limiting
+rate_limit:
+  enabled: true
+  requests_per_minute: 60
+  requests_per_hour: 1000
+  requests_per_day: 10000
+  burst_size: 10
+
+# Caching Configuration
+cache:
+  enabled: true
+  max_size: 1000
+  ttl_seconds: 3600  # 1 hour
+  cleanup_interval_seconds: 300  # 5 minutes
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: null  # Set to file path for file logging
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+  json_format: false  # Set to true for structured logging
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  health_check_interval: 30
+  performance_tracking: true
+
+# Custom Settings
+custom:
+  # Add any custom application-specific settings here
+  max_embedding_batch_size: 8
+  enable_similarity_search: true
