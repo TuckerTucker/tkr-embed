@@ -1,16 +1,19 @@
 """
 MLX Model Manager for OpenSearch-AI/Ops-MM-embedding-v1-7B
 Handles model loading, quantization, and memory optimization for Apple Silicon
+Supports Qwen2VL multimodal architecture with transformers + MLX backend
 """
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm import load, generate
 import psutil
 import time
+import numpy as np
+from transformers import AutoTokenizer, AutoProcessor, Qwen2VLForConditionalGeneration
+import torch
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -76,18 +79,36 @@ class OpsMMEmbeddingMLX:
     
     async def load_model(self) -> None:
         """Load and quantize the multimodal embedding model"""
-        logger.info(f"Loading model from {self.model_path}")
+        logger.info(f"Loading Qwen2VL model from {self.model_path}")
         start_time = time.time()
         
         try:
-            # Load base model and tokenizer
-            logger.info("Loading base model and tokenizer...")
-            self.model, self.tokenizer = load(
+            # Load tokenizer and processor
+            logger.info("Loading tokenizer and processor...")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_path, 
+                trust_remote_code=True
+            )
+            self.processor = AutoProcessor.from_pretrained(
                 self.model_path,
-                tokenizer_config={"trust_remote_code": True}
+                trust_remote_code=True
+            )
+            
+            # Load model with appropriate precision
+            logger.info("Loading Qwen2VL model...")
+            torch_dtype = torch.float16 if self.quantization != "none" else torch.float32
+            
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                self.model_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=True,
+                device_map="auto"  # Let transformers handle device placement
             )
             
             logger.info("Model loaded successfully")
+            
+            # Convert to evaluation mode
+            self.model.eval()
             
             # Apply quantization if specified
             if self.quantization == "q4":
@@ -110,28 +131,52 @@ class OpsMMEmbeddingMLX:
             raise
     
     def _quantize_4bit(self) -> None:
-        """Apply 4-bit quantization for 16GB systems"""
-        from mlx.nn import quantize
-        
-        logger.info("Quantizing model to 4-bit precision...")
-        self.model = quantize(
-            self.model, 
-            bits=4, 
-            group_size=64
-        )
-        logger.info("4-bit quantization complete")
+        """Apply 4-bit quantization for 16GB systems using BitsAndBytes"""
+        try:
+            from transformers import BitsAndBytesConfig
+            import torch
+            
+            logger.info("Converting to 4-bit precision with BitsAndBytes...")
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            
+            # Reload model with quantization
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                self.model_path,
+                quantization_config=quantization_config,
+                trust_remote_code=True,
+                device_map="auto"
+            )
+            logger.info("4-bit quantization complete")
+        except ImportError:
+            logger.warning("BitsAndBytes not available, using float16 instead")
+            self.model = self.model.half()
     
     def _quantize_8bit(self) -> None:
-        """Apply 8-bit quantization for 32GB systems"""
-        from mlx.nn import quantize
-        
-        logger.info("Quantizing model to 8-bit precision...")
-        self.model = quantize(
-            self.model,
-            bits=8,
-            group_size=128
-        )
-        logger.info("8-bit quantization complete")
+        """Apply 8-bit quantization for 32GB systems using BitsAndBytes"""
+        try:
+            from transformers import BitsAndBytesConfig
+            
+            logger.info("Converting to 8-bit precision with BitsAndBytes...")
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True
+            )
+            
+            # Reload model with quantization
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                self.model_path,
+                quantization_config=quantization_config,
+                trust_remote_code=True,
+                device_map="auto"
+            )
+            logger.info("8-bit quantization complete")
+        except ImportError:
+            logger.warning("BitsAndBytes not available, using float16 instead")
+            self.model = self.model.half()
     
     def _get_memory_usage(self) -> float:
         """Get current memory usage in GB"""
@@ -139,94 +184,136 @@ class OpsMMEmbeddingMLX:
         memory_bytes = process.memory_info().rss
         return memory_bytes / (1024**3)
     
-    def encode_text(self, texts: List[str]) -> mx.array:
+    def encode_text(self, texts: List[str]) -> np.ndarray:
         """
-        Encode text inputs to embeddings
+        Encode text inputs to embeddings using Qwen2VL
         
         Args:
             texts: List of text strings to encode
             
         Returns:
-            MLX array of embeddings
+            NumPy array of embeddings
         """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
         
         logger.debug(f"Encoding {len(texts)} text inputs")
         
-        # Tokenize inputs
-        inputs = self.tokenizer(texts, return_tensors="mlx", padding=True, truncation=True)
+        embeddings_list = []
         
-        # Generate embeddings
-        with mx.no_grad():
-            outputs = self.model(**inputs)
-            # Extract embeddings (typically from last_hidden_state)
-            embeddings = outputs.last_hidden_state.mean(axis=1)  # Mean pooling
+        with torch.no_grad():
+            for text in texts:
+                # Use processor for consistent input handling
+                messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
+                text_inputs = self.processor.apply_chat_template(
+                    messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
+                )
+                
+                # Get hidden states from the model
+                outputs = self.model(input_ids=text_inputs, output_hidden_states=True)
+                
+                # Extract embeddings from the last layer
+                # Use mean pooling over sequence length
+                last_hidden_state = outputs.hidden_states[-1]  # Shape: (1, seq_len, hidden_size)
+                embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
+                
+                embeddings_list.append(embedding.cpu().numpy())
         
+        # Stack all embeddings
+        embeddings = np.vstack(embeddings_list)
         return embeddings
     
-    def encode_image(self, images: mx.array) -> mx.array:
+    def encode_image(self, images: Union[str, List[str]]) -> np.ndarray:
         """
-        Encode image inputs to embeddings
+        Encode image inputs to embeddings using Qwen2VL vision encoder
         
         Args:
-            images: MLX array of preprocessed images
+            images: Image file paths (string or list of strings)
             
         Returns:
-            MLX array of image embeddings
+            NumPy array of image embeddings
         """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
         
-        logger.debug(f"Encoding {images.shape[0]} image inputs")
+        # Ensure images is a list
+        if isinstance(images, str):
+            images = [images]
         
-        with mx.no_grad():
-            # Process images through vision encoder
-            image_embeddings = self.model.encode_image(images)
+        logger.debug(f"Encoding {len(images)} image inputs")
         
-        return image_embeddings
+        embeddings_list = []
+        
+        with torch.no_grad():
+            for image_path in images:
+                # Create message with image
+                messages = [{"role": "user", "content": [{"type": "image", "image": image_path}]}]
+                
+                # Process the image and get inputs
+                inputs = self.processor.apply_chat_template(
+                    messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
+                )
+                
+                # Get hidden states from the model 
+                outputs = self.model(**inputs, output_hidden_states=True)
+                
+                # Extract image embeddings from the last layer
+                # For vision models, we typically want the vision token embeddings
+                last_hidden_state = outputs.hidden_states[-1]
+                
+                # Use mean pooling over the sequence (excluding text tokens if any)
+                embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
+                
+                embeddings_list.append(embedding.cpu().numpy())
+        
+        # Stack all embeddings
+        embeddings = np.vstack(embeddings_list) 
+        return embeddings
     
-    def encode_multimodal(self, text: Optional[str] = None, image: Optional[mx.array] = None) -> mx.array:
+    def encode_multimodal(self, text: Optional[str] = None, image_path: Optional[str] = None) -> np.ndarray:
         """
-        Encode multimodal inputs (text + image) to unified embedding
+        Encode multimodal inputs (text + image) to unified embedding using Qwen2VL
         
         Args:
             text: Optional text input
-            image: Optional image input as MLX array
+            image_path: Optional image file path
             
         Returns:
-            MLX array of multimodal embedding
+            NumPy array of multimodal embedding
         """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
         
-        if text is None and image is None:
-            raise ValueError("At least one of text or image must be provided")
+        if text is None and image_path is None:
+            raise ValueError("At least one of text or image_path must be provided")
         
         logger.debug("Encoding multimodal input")
         
-        with mx.no_grad():
-            # Encode text if provided
-            text_embedding = None
+        with torch.no_grad():
+            # Create multimodal message
+            content = []
             if text is not None:
-                text_inputs = self.tokenizer([text], return_tensors="mlx")
-                text_outputs = self.model(**text_inputs)
-                text_embedding = text_outputs.last_hidden_state.mean(axis=1)
+                content.append({"type": "text", "text": text})
+            if image_path is not None:
+                content.append({"type": "image", "image": image_path})
             
-            # Encode image if provided
-            image_embedding = None
-            if image is not None:
-                image_embedding = self.model.encode_image(mx.expand_dims(image, axis=0))
+            messages = [{"role": "user", "content": content}]
             
-            # Combine embeddings if both provided
-            if text_embedding is not None and image_embedding is not None:
-                # Simple concatenation - the model may have more sophisticated fusion
-                combined_embedding = mx.concatenate([text_embedding, image_embedding], axis=-1)
-                return combined_embedding
-            elif text_embedding is not None:
-                return text_embedding
-            else:
-                return image_embedding
+            # Process inputs
+            inputs = self.processor.apply_chat_template(
+                messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
+            )
+            
+            # Get hidden states from the model
+            outputs = self.model(**inputs, output_hidden_states=True)
+            
+            # Extract multimodal embedding from the last layer
+            last_hidden_state = outputs.hidden_states[-1]  # Shape: (1, seq_len, hidden_size)
+            
+            # Use mean pooling over sequence length to get unified embedding
+            embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
+            
+            return embedding.cpu().numpy()
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information and performance metrics"""
@@ -237,13 +324,16 @@ class OpsMMEmbeddingMLX:
             "load_time": self.load_time,
             "memory_usage_gb": self.memory_usage,
             "model_loaded": self.model is not None,
-            "embedding_dim": 1024,  # Ops-MM default dimension
+            "embedding_dim": 3584,  # Qwen2VL hidden dimension
+            "architecture": "Qwen2VLForConditionalGeneration",
             "supported_modalities": ["text", "image", "multimodal"]
         }
     
     def is_ready(self) -> bool:
         """Check if model is loaded and ready for inference"""
-        return self.model is not None and self.tokenizer is not None
+        return (self.model is not None and 
+                self.tokenizer is not None and 
+                self.processor is not None)
     
     def __del__(self):
         """Cleanup resources"""

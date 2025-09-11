@@ -168,32 +168,27 @@ async def embed_text(request: TextEmbeddingRequest):
         if not model_instance:
             raise HTTPException(status_code=503, detail="Model not initialized")
         
-        # Use mock embeddings for now (real model loading deferred)
-        logger.info(f"Generating mock embeddings for {len(request.texts)} texts")
+        if not model_instance.is_ready():
+            raise HTTPException(status_code=503, detail="Model not ready")
+            
+        logger.info(f"Processing {len(request.texts)} text inputs with real model")
         
-        logger.info(f"Processing {len(request.texts)} text inputs")
+        # Generate real embeddings using the Qwen2VL model
+        embeddings_array = model_instance.encode_text(request.texts)
         
-        # For now, return mock embeddings since we haven't loaded the actual model
-        # embeddings = model_instance.encode_text(request.texts)
-        
-        # Mock embeddings for testing
-        embedding_dim = 1024
-        mock_embeddings = []
-        for text in request.texts:
-            # Create deterministic mock embedding based on text hash
-            import hashlib
-            text_hash = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
-            np.random.seed(text_hash % (2**32))
-            embedding = np.random.randn(embedding_dim).astype(np.float32)
+        # Convert to list format and apply normalization if requested
+        embeddings_list = []
+        for i in range(embeddings_array.shape[0]):
+            embedding = embeddings_array[i]
             if request.normalize:
                 embedding = embedding / np.linalg.norm(embedding)
-            mock_embeddings.append(embedding.tolist())
+            embeddings_list.append(embedding.tolist())
         
         processing_time = time.time() - start_time
         
         return EmbeddingResponse(
-            embeddings=mock_embeddings,
-            shape=[len(request.texts), embedding_dim],
+            embeddings=embeddings_list,
+            shape=[len(request.texts), embeddings_array.shape[1]],
             model="Ops-MM-embedding-v1-7B",
             processing_time=processing_time
         )
@@ -212,6 +207,9 @@ async def embed_image(file: UploadFile = File(...)):
         if not model_instance:
             raise HTTPException(status_code=503, detail="Model not initialized")
         
+        if not model_instance.is_ready():
+            raise HTTPException(status_code=503, detail="Model not ready")
+        
         # Validate file type
         if not file.content_type or not file.content_type.startswith('image/'):
             raise HTTPException(status_code=400, detail="File must be an image")
@@ -225,27 +223,19 @@ async def embed_image(file: UploadFile = File(...)):
             tmp_path = tmp.name
         
         try:
-            # Process image
-            image = Image.open(tmp_path).convert("RGB")
-            image = image.resize((336, 336))  # Standard size for vision models
+            # Process image with real model
+            logger.info(f"Generating real image embedding for {file.filename}")
+            embeddings_array = model_instance.encode_image(tmp_path)
             
-            # For now, return mock embedding
-            # image_array = np.array(image).astype(np.float32) / 255.0
-            # embeddings = model_instance.encode_image(mx.array(image_array))
-            
-            # Mock image embedding
-            embedding_dim = 1024
-            import hashlib
-            img_hash = int(hashlib.md5(content).hexdigest()[:8], 16)
-            np.random.seed(img_hash % (2**32))
-            embedding = np.random.randn(embedding_dim).astype(np.float32)
-            embedding = embedding / np.linalg.norm(embedding)  # Normalize
+            # Convert to list format and normalize if needed
+            embedding = embeddings_array[0]  # Single image
+            embedding = embedding / np.linalg.norm(embedding)  # Always normalize images
             
             processing_time = time.time() - start_time
             
             return EmbeddingResponse(
                 embeddings=[embedding.tolist()],
-                shape=[1, embedding_dim],
+                shape=[1, len(embedding)],
                 model="Ops-MM-embedding-v1-7B",
                 processing_time=processing_time
             )
@@ -271,38 +261,44 @@ async def embed_multimodal(
         if not model_instance:
             raise HTTPException(status_code=503, detail="Model not initialized")
         
+        if not model_instance.is_ready():
+            raise HTTPException(status_code=503, detail="Model not ready")
+        
         if not text and not image:
             raise HTTPException(status_code=400, detail="At least one of text or image must be provided")
         
         logger.info(f"Processing multimodal input - text: {text is not None}, image: {image is not None}")
         
-        # Mock multimodal embedding
-        embedding_dim = 1024
-        seed = 42
+        # Handle image path if provided
+        tmp_path = None
+        if image:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                content = await image.read()
+                tmp.write(content)
+                tmp_path = tmp.name
         
-        if text and image:
-            # Combined text + image embedding
-            content = await image.read() if image else b""
-            combined_hash = int(hashlib.sha256(text.encode() + content).hexdigest()[:8], 16)
-            np.random.seed(combined_hash % (2**32))
-        elif text:
-            # Text only
-            text_hash = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
-            np.random.seed(text_hash % (2**32))
-        else:
-            # Image only
-            content = await image.read()
-            img_hash = int(hashlib.md5(content).hexdigest()[:8], 16)
-            np.random.seed(img_hash % (2**32))
-        
-        embedding = np.random.randn(embedding_dim).astype(np.float32)
-        embedding = embedding / np.linalg.norm(embedding)  # Normalize
+        try:
+            # Generate real multimodal embedding
+            logger.info("Generating real multimodal embedding")
+            embeddings_array = model_instance.encode_multimodal(
+                text=text,
+                image_path=tmp_path
+            )
+            
+            # Convert to list format and normalize
+            embedding = embeddings_array[0]  # Single multimodal embedding
+            embedding = embedding / np.linalg.norm(embedding)  # Normalize
+            
+        finally:
+            # Cleanup temp file if created
+            if tmp_path:
+                os.unlink(tmp_path)
         
         processing_time = time.time() - start_time
         
         return EmbeddingResponse(
             embeddings=[embedding.tolist()],
-            shape=[1, embedding_dim],
+            shape=[1, len(embedding)],
             model="Ops-MM-embedding-v1-7B",
             processing_time=processing_time
         )

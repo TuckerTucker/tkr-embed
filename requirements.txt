@@ -1,10 +1,14 @@
 # MLX and ML dependencies
 mlx>=0.22.0
 mlx-lm>=0.22.0
+torch>=2.5.0
+torchvision>=0.20.0
 huggingface-hub>=0.27.0
 transformers>=4.48.0
 tokenizers>=0.21.0
 sentencepiece>=0.2.0
+bitsandbytes>=0.45.0
+accelerate>=1.1.0
 
 # FastAPI and server dependencies
 fastapi>=0.115.0
