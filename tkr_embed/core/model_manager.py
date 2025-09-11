@@ -98,11 +98,12 @@ class OpsMMEmbeddingMLX:
             logger.info("Loading Qwen2VL model...")
             torch_dtype = torch.float16 if self.quantization != "none" else torch.float32
             
+            # Use CPU for now due to MPS limitations with this model
             self.model = Qwen2VLForConditionalGeneration.from_pretrained(
                 self.model_path,
                 torch_dtype=torch_dtype,
                 trust_remote_code=True,
-                device_map="auto"  # Let transformers handle device placement
+                device_map="cpu"  # Use CPU to avoid MPS issues
             )
             
             logger.info("Model loaded successfully")
