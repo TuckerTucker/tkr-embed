@@ -1,0 +1,84 @@
+# tkr-embed | MLX Multimodal Embedding Server - Development Configuration
+# Optimized for development workflow and testing
+
+# Development Environment
+environment: "development"
+debug: true
+
+# Server Configuration - Development friendly
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  reload: true        # Auto-reload on code changes
+  log_level: "DEBUG"  # Verbose logging
+  access_log: true
+  timeout_keep_alive: 65
+
+# Model Configuration - Skip loading for faster startup
+model:
+  model_path: "OpenSearch-AI/Ops-MM-embedding-v1-7B"
+  quantization: "auto"  # auto, q4, q8, none
+  cache_dir: "./models"
+  device: "auto"  # auto, cpu, gpu
+  max_sequence_length: 2048
+  trust_remote_code: true
+
+# Security Configuration - Relaxed for development
+security:
+  require_api_key: false    # No auth required for dev
+  require_https: false      # HTTP is fine for dev
+  api_key_header: "X-API-Key"
+  cors_origins: ["*"]       # Allow all origins
+  cors_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+  cors_headers: ["*"]
+
+# Rate Limiting - Disabled for development
+rate_limit:
+  enabled: false            # No rate limiting in dev
+  requests_per_minute: 1000 # High limits if enabled
+  requests_per_hour: 10000
+  requests_per_day: 100000
+  burst_size: 100
+
+# Caching Configuration - Enabled but small
+cache:
+  enabled: true
+  max_size: 100            # Smaller cache for dev
+  ttl_seconds: 300         # 5 minutes (short for testing)
+  cleanup_interval_seconds: 60  # 1 minute
+
+# Logging Configuration - Verbose for debugging
+logging:
+  level: "DEBUG"           # Show everything
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: null          # Console logging only
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+  json_format: false       # Human-readable format
+
+# Monitoring Configuration - Basic
+monitoring:
+  enabled: true
+  metrics_port: 9090
+  health_check_interval: 10  # More frequent checks
+  performance_tracking: true
+
+# Development-specific Custom Settings
+custom:
+  # Skip model loading for faster startup
+  skip_model_loading: false      # Set to true for API-only testing
+  
+  # Development features
+  enable_hot_reload: true
+  show_request_details: true
+  enable_debug_endpoints: true
+  
+  # Performance settings for development
+  max_embedding_batch_size: 4   # Smaller batches for testing
+  enable_similarity_search: true
+  
+  # Mock settings for testing
+  use_mock_embeddings: false    # Set to true for testing without model
+  mock_embedding_dimension: 3584
+  mock_processing_delay: 0.1    # Simulate processing time

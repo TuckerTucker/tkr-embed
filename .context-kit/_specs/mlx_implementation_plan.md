@@ -1,4 +1,4 @@
-# MLX Multimodal Embedding Server - Implementation Plan
+# tkr-embed | MLX Multimodal Embedding Server - Implementation Plan
 
 ## Goal
 Build a production-ready multimodal embedding server using MLX and OpenSearch-AI/Ops-MM-embedding-v1-7B optimized for Apple Silicon.

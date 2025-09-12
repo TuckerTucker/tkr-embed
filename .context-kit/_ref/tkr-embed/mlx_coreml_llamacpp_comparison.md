@@ -167,7 +167,7 @@ Only recommended if:
 
 ### MLX Implementation
 ```python
-# MLX multimodal embedding server
+# tkr-embed | MLX Multimodal Embedding Server
 import mlx.core as mx
 from fastapi import FastAPI
 from PIL import Image

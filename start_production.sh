@@ -1,9 +1,9 @@
 #!/bin/bash
-# MLX Multimodal Embedding Server - Production Startup Script
+# tkr-embed | MLX Multimodal Embedding Server - Production Startup Script
 
 set -e  # Exit on any error
 
-echo "🚀 Starting MLX Multimodal Embedding Server (Production Mode)"
+echo "🚀 Starting tkr-embed | MLX Multimodal Embedding Server (Production Mode)"
 echo "============================================================="
 
 # Check if virtual environment exists

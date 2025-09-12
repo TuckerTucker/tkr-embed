@@ -401,8 +401,11 @@ config_manager = ConfigManager()
 config_manager.load_from_environment()
 
 # Try to load from config file
+# Priority order: development configs first, then production configs
 config_file_paths = [
-    "config.yaml",
+    "config.dev.yaml",      # Development-specific config
+    "config.dev.yml",
+    "config.yaml",          # Production config
     "config.yml", 
     "config.json",
     ".config/embedding-server.yaml",
@@ -413,6 +416,7 @@ config_file_paths = [
 for config_path in config_file_paths:
     if os.path.exists(config_path):
         config_manager.load_from_file(config_path)
+        logger.info(f"Using configuration file: {config_path}")
         break
 
 # Global config instance
@@ -433,6 +437,7 @@ def reload_config():
     for config_path in config_file_paths:
         if os.path.exists(config_path):
             config_manager.load_from_file(config_path)
+            logger.info(f"Configuration reloaded from: {config_path}")
             break
     
     config = config_manager.get_config()

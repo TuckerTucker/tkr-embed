@@ -1,5 +1,5 @@
 """
-Batch processing optimization for MLX multimodal embedding server
+Batch processing optimization for tkr-embed | MLX Multimodal Embedding Server
 Improves throughput by processing multiple inputs together
 """
 

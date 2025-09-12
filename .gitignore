@@ -1,4 +1,4 @@
-# MLX Multimodal Embedding Server .gitignore
+# tkr-embed | MLX Multimodal Embedding Server .gitignore
 
 # Python
 __pycache__/

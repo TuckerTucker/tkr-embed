@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     """Manage model lifecycle and production components during server startup/shutdown"""
     global model_instance, memory_manager, cached_processor, batch_processor, server_start_time
     
-    logger.info("🚀 Starting MLX Multimodal Embedding Server (Production Mode)")
+    logger.info("🚀 Starting tkr-embed | MLX Multimodal Embedding Server (Production Mode)")
     server_start_time = time.time()
     
     try:
@@ -147,11 +147,11 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app with production configuration
 app = FastAPI(
-    title="MLX Multimodal Embedding Server",
+    title="tkr-embed | MLX Multimodal Embedding Server",
     description="Production-ready multimodal embedding service optimized for Apple Silicon",
     version="1.0.0",
-    docs_url="/docs" if config.debug else None,  # Disable docs in production
-    redoc_url="/redoc" if config.debug else None,
+    docs_url="/docs",  # Always enable docs for development
+    redoc_url="/redoc",  # Always enable docs for development
     lifespan=lifespan,
     debug=config.debug
 )

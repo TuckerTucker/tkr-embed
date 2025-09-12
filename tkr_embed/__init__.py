@@ -1,5 +1,5 @@
 """
-tkr_embed - MLX Multimodal Embedding Server
+tkr_embed - tkr-embed | MLX Multimodal Embedding Server
 Optimized for Apple Silicon (M1/M2/M3) with OpenSearch-AI/Ops-MM-embedding-v1-7B
 """
 

@@ -460,7 +460,7 @@ async def model_info():
 ### Configuration Schema (config.yaml)
 
 ```yaml
-# config.yaml - MLX Multimodal Embedding Server Configuration
+# config.yaml - tkr-embed | MLX Multimodal Embedding Server Configuration
 model:
   name: "OpenSearch-AI/Ops-MM-embedding-v1-7B"
   quantization: "auto"  # auto, q4, q8, or none
@@ -622,7 +622,7 @@ class MemoryManager:
 #!/bin/bash
 # setup_mlx_server.sh
 
-echo "🚀 Setting up MLX Multimodal Embedding Server"
+echo "🚀 Setting up tkr-embed | MLX Multimodal Embedding Server"
 
 # 1. Check system
 if [[ $(uname -m) != "arm64" ]]; then

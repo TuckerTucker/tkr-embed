@@ -27,7 +27,7 @@ Use:
 !! Always run scripts from the project root !!
 # _context-kit.yml
 
-# Project: tkr-embed - MLX Multimodal Embedding Server
+# Project: tkr-embed - tkr-embed | MLX Multimodal Embedding Server
 # ✅ FOUNDATION PHASE COMPLETE - Real Model Loading Next Priority
 # Apple Silicon optimized multimodal embedding server with completed MLX foundation
 
