@@ -475,7 +475,7 @@ processing:
 
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
   workers: 1
   max_batch_size: 32
   timeout: 30
@@ -661,7 +661,7 @@ else
 fi
 
 echo "Starting server with config: $CONFIG"
-uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+uvicorn server:app --host 0.0.0.0 --port 8008 --reload
 EOF
 
 chmod +x start_server.sh
@@ -685,10 +685,10 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8008
 
 # Start server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8008"]
 ```
 
 ## 📈 Performance Benchmarks

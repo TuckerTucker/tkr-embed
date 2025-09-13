@@ -17,7 +17,7 @@ import sseclient
 class TkrEmbedStreamingClient:
     """Client for tkr-embed streaming generation API"""
 
-    def __init__(self, base_url: str = "http://localhost:8000", api_key: Optional[str] = None):
+    def __init__(self, base_url: str = "http://localhost:8008", api_key: Optional[str] = None):
         self.base_url = base_url
         self.api_key = api_key
 
@@ -296,7 +296,7 @@ async def demonstrate_streaming_comparison():
     async def non_streaming_generation(prompt: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "http://localhost:8000/generate",
+                "http://localhost:8008/generate",
                 headers={"Content-Type": "application/json", "X-API-Key": "your-api-key-here"},
                 json={
                     "text": prompt,

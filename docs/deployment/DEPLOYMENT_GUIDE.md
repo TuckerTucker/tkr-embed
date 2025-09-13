@@ -73,9 +73,9 @@ python -m tkr_embed.api.server
 ```
 
 **Access:**
-- API: http://localhost:8000
-- Documentation: http://localhost:8000/docs
-- Health Check: http://localhost:8000/health
+- API: http://localhost:8008
+- Documentation: http://localhost:8008/docs
+- Health Check: http://localhost:8008/health
 
 ### 2. Production Quick Start
 
@@ -108,7 +108,7 @@ debug: true
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 8008
 
 model:
   quantization: "auto"
@@ -138,8 +138,8 @@ ls config.dev.yaml  # Should exist
 python -m tkr_embed.api.server
 
 # 4. Verify deployment
-curl http://localhost:8000/health
-curl -X POST http://localhost:8000/generate \
+curl http://localhost:8008/health
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello world", "max_tokens": 50}'
 ```
@@ -155,7 +155,7 @@ debug: false
 
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
 
 model:
   quantization: "q8"
@@ -195,9 +195,9 @@ GENERATION_CONFIG_FILE="config.staging.yaml" \
   python -m tkr_embed.api.server
 
 # 5. Verify deployment
-curl http://localhost:8000/health
+curl http://localhost:8008/health
 curl -H "X-API-Key: staging-api-key-here" \
-  -X POST http://localhost:8000/generate \
+  -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -d '{"text": "Test deployment", "max_tokens": 50}'
 ```
@@ -213,7 +213,7 @@ debug: false
 
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
 
 model:
   model_path: "microsoft/gpt-oss-20b"
@@ -301,7 +301,7 @@ sudo systemctl start tkr-embed
 
 # 7. Verify deployment
 sudo systemctl status tkr-embed
-curl http://localhost:8000/health
+curl http://localhost:8008/health
 ```
 
 ## Reverse Proxy Configuration
@@ -312,7 +312,7 @@ curl http://localhost:8000/health
 
 ```nginx
 upstream tkr_embed_backend {
-    server 127.0.0.1:8000;
+    server 127.0.0.1:8008;
     # Add more servers for load balancing
     # server 127.0.0.1:8001;
     # server 127.0.0.1:8002;
@@ -411,12 +411,12 @@ server {
     ProxyRequests Off
 
     # Main proxy
-    ProxyPass / http://127.0.0.1:8000/
-    ProxyPassReverse / http://127.0.0.1:8000/
+    ProxyPass / http://127.0.0.1:8008/
+    ProxyPassReverse / http://127.0.0.1:8008/
 
     # Streaming endpoint configuration
-    ProxyPass /stream http://127.0.0.1:8000/stream
-    ProxyPassReverse /stream http://127.0.0.1:8000/stream
+    ProxyPass /stream http://127.0.0.1:8008/stream
+    ProxyPassReverse /stream http://127.0.0.1:8008/stream
 
     # Headers for streaming
     <Location "/stream">
@@ -437,11 +437,11 @@ server {
 # config.yaml
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
 
 # nginx upstream
 upstream tkr_embed_backend {
-    server 127.0.0.1:8000;
+    server 127.0.0.1:8008;
 }
 ```
 
@@ -451,7 +451,7 @@ upstream tkr_embed_backend {
 
 ```bash
 # Start multiple instances on different ports
-GENERATION_PORT=8000 python -m tkr_embed.api.server &
+GENERATION_PORT=8008 python -m tkr_embed.api.server &
 GENERATION_PORT=8001 python -m tkr_embed.api.server &
 GENERATION_PORT=8002 python -m tkr_embed.api.server &
 ```
@@ -460,7 +460,7 @@ GENERATION_PORT=8002 python -m tkr_embed.api.server &
 # nginx load balancing
 upstream tkr_embed_backend {
     least_conn;  # Use least connections algorithm
-    server 127.0.0.1:8000 weight=1 max_fails=3 fail_timeout=30s;
+    server 127.0.0.1:8008 weight=1 max_fails=3 fail_timeout=30s;
     server 127.0.0.1:8001 weight=1 max_fails=3 fail_timeout=30s;
     server 127.0.0.1:8002 weight=1 max_fails=3 fail_timeout=30s;
 }
@@ -480,7 +480,7 @@ location /health {
 
 # Upstream health checks (nginx plus)
 upstream tkr_embed_backend {
-    server 127.0.0.1:8000;
+    server 127.0.0.1:8008;
     server 127.0.0.1:8001;
     server 127.0.0.1:8002;
 
@@ -572,7 +572,7 @@ async def get_metrics():
 scrape_configs:
   - job_name: 'tkr-embed'
     static_configs:
-      - targets: ['localhost:8000']
+      - targets: ['localhost:8008']
     metrics_path: '/metrics'
     scrape_interval: 30s
 ```
@@ -596,7 +596,7 @@ sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 
 # Deny direct access to application port
-sudo ufw deny 8000/tcp
+sudo ufw deny 8008/tcp
 ```
 
 **API Key Security:**
@@ -754,7 +754,7 @@ sudo chmod 644 /opt/tkr-embed/app/*.yaml
 **4. Port Conflicts:**
 ```bash
 # Check port usage
-sudo netstat -tlnp | grep :8000
+sudo netstat -tlnp | grep :8008
 
 # Change port
 export GENERATION_PORT=8001

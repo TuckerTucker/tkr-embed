@@ -19,7 +19,7 @@ logger = logging.getLogger("ServerStartupTest")
 class ServerTester:
     def __init__(self):
         self.server_process = None
-        self.base_url = "http://localhost:8000"
+        self.base_url = "http://localhost:8008"
 
     async def start_server(self):
         """Start the server in background"""

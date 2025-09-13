@@ -7,7 +7,7 @@ The tkr-embed server provides a production-ready text generation API powered by 
 ## Base URL
 
 ```
-http://localhost:8000
+http://localhost:8008
 ```
 
 ## Authentication
@@ -18,12 +18,12 @@ All generation endpoints require API key authentication (configurable). Include 
 ```bash
 curl -H "X-API-Key: your-api-key-here" \
      -H "Content-Type: application/json" \
-     http://localhost:8000/generate
+     http://localhost:8008/generate
 ```
 
 ### Query Parameter Authentication
 ```bash
-curl "http://localhost:8000/generate?api_key=your-api-key-here"
+curl "http://localhost:8008/generate?api_key=your-api-key-here"
 ```
 
 ## Core Endpoints

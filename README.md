@@ -92,13 +92,13 @@ python -m tkr_embed.api.server
 ### 4. **Verify Installation**
 ```bash
 # Health check (should show model_loaded: true)
-curl http://localhost:8000/health
+curl http://localhost:8008/health
 
 # API documentation (Swagger UI)
-open http://localhost:8000/docs
+open http://localhost:8008/docs
 
 # Test text generation (development mode - no auth required)
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -d '{"text": "Explain machine learning in simple terms", "max_tokens": 100}'
 ```
@@ -130,12 +130,12 @@ export GENERATION_API_KEY="your-master-key"
 ```bash
 # Header authentication
 curl -H "X-API-Key: your-api-key" \
-     -X POST http://localhost:8000/generate \
+     -X POST http://localhost:8008/generate \
      -H "Content-Type: application/json" \
      -d '{"text": "Hello world", "max_tokens": 50}'
 
 # Query parameter authentication
-curl "http://localhost:8000/generate?api_key=your-api-key" \
+curl "http://localhost:8008/generate?api_key=your-api-key" \
      -X POST \
      -H "Content-Type: application/json" \
      -d '{"text": "Hello world", "max_tokens": 50}'
@@ -254,7 +254,7 @@ The GPT-OSS-20B API supports three reasoning levels that affect response quality
 # Server Configuration
 GENERATION_ENV=production          # development, production, testing
 GENERATION_HOST=0.0.0.0           # Server host
-GENERATION_PORT=8000              # Server port
+GENERATION_PORT=8008              # Server port
 GENERATION_DEBUG=false            # Debug mode
 
 # Model Configuration
@@ -281,7 +281,7 @@ debug: false
 
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
 
 model:
   model_path: "microsoft/gpt-oss-20b"
@@ -398,7 +398,7 @@ import httpx
 async def generate_text(prompt: str):
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/generate",
+            "http://localhost:8008/generate",
             headers={"X-API-Key": "your-api-key"},
             json={
                 "text": prompt,
@@ -414,7 +414,7 @@ async def generate_text(prompt: str):
 async def stream_generation(prompt: str):
     async with httpx.AsyncClient() as client:
         async with client.stream(
-            "POST", "http://localhost:8000/stream",
+            "POST", "http://localhost:8008/stream",
             headers={"X-API-Key": "your-api-key"},
             json={"text": prompt, "max_tokens": 300}
         ) as response:

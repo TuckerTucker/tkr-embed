@@ -15,6 +15,12 @@ import asyncio
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 import torch
 from threading import Thread
+try:
+    from mlx_lm import load, generate
+    from mlx_lm.sample_utils import make_sampler
+    MLX_AVAILABLE = True
+except ImportError:
+    MLX_AVAILABLE = False
 from ..config import get_config
 try:
     import sys
@@ -124,7 +130,16 @@ class GPTOss20bMLX:
 
         logger.info(f"Using quantization: {self.quantization}")
         logger.info(f"Using device: {self.device}")
-        
+
+    def _is_mlx_model(self) -> bool:
+        """Check if this is an MLX quantized model"""
+        mlx_indicators = [
+            "MLX" in self.model_path.upper(),
+            "mlx" in self.model_path.lower(),
+            any(keyword in self.model_path.lower() for keyword in ["4bit", "8bit", "quantized"])
+        ]
+        return any(mlx_indicators)
+
     def _detect_optimal_quantization(self) -> str:
         """Auto-detect optimal quantization based on system memory for 21B model"""
         memory_gb = psutil.virtual_memory().total // (1024**3)
@@ -161,49 +176,13 @@ class GPTOss20bMLX:
         start_time = time.time()
 
         try:
-            # Load tokenizer
-            logger.info("Loading tokenizer...")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_path,
-                trust_remote_code=True,
-                cache_dir=self.cache_dir
-            )
-
-            # Add pad token if missing
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-
-            # Load model with appropriate precision and device
-            logger.info(f"Loading GPT-OSS-20B model on {self.device}...")
-            torch_dtype = self._get_torch_dtype()
-            device_map = self._get_device_map()
-
-            # Load model with quantization if specified
-            if self.quantization in ["q4", "q8"]:
-                logger.info(f"Loading model with {self.quantization.upper()} quantization...")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=True,
-                    cache_dir=self.cache_dir,
-                    quantization_config=self._get_quantization_config(),
-                    device_map=device_map,
-                    low_cpu_mem_usage=True
-                )
+            # Check if this is an MLX model
+            if self._is_mlx_model() and MLX_AVAILABLE:
+                logger.info("Detected MLX model, using MLX loading...")
+                await self._load_mlx_model()
             else:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    torch_dtype=torch_dtype,
-                    trust_remote_code=True,
-                    cache_dir=self.cache_dir,
-                    device_map=device_map,
-                    low_cpu_mem_usage=True
-                )
-
-            logger.info("Model loaded successfully")
-
-            # Convert to evaluation mode
-            self.model.eval()
+                logger.info("Using transformers loading...")
+                await self._load_transformers_model()
 
             # Record performance metrics
             self.load_time = time.time() - start_time
@@ -215,6 +194,65 @@ class GPTOss20bMLX:
             logger.error(f"Failed to load model: {e}")
             raise
 
+    async def _load_mlx_model(self) -> None:
+        """Load MLX quantized model"""
+        logger.info("Loading MLX model and tokenizer...")
+
+        # Use mlx_lm to load both model and tokenizer
+        self.model, self.tokenizer = load(self.model_path)
+
+        # Add pad token if missing
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        logger.info("MLX model loaded successfully")
+
+    async def _load_transformers_model(self) -> None:
+        """Load model using transformers library"""
+        # Load tokenizer
+        logger.info("Loading tokenizer...")
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_path,
+            trust_remote_code=True,
+            cache_dir=self.cache_dir
+        )
+
+        # Add pad token if missing
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Load model with appropriate precision and device
+        logger.info(f"Loading GPT-OSS-20B model on {self.device}...")
+        torch_dtype = self._get_torch_dtype()
+        device_map = self._get_device_map()
+
+        # Load model with quantization if specified
+        if self.quantization in ["q4", "q8"]:
+            logger.info(f"Loading model with {self.quantization.upper()} quantization...")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=True,
+                cache_dir=self.cache_dir,
+                quantization_config=self._get_quantization_config(),
+                device_map=device_map,
+                low_cpu_mem_usage=True
+            )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_path,
+                torch_dtype=torch_dtype,
+                trust_remote_code=True,
+                cache_dir=self.cache_dir,
+                device_map=device_map,
+                low_cpu_mem_usage=True
+            )
+
+        logger.info("Model loaded successfully")
+
+        # Convert to evaluation mode
+        self.model.eval()
+
     def _get_torch_dtype(self) -> torch.dtype:
         """Get appropriate torch dtype based on quantization"""
         if self.quantization == "none":
@@ -222,12 +260,13 @@ class GPTOss20bMLX:
         else:
             return torch.float16
 
-    def _get_device_map(self) -> str:
+    def _get_device_map(self):
         """Get device mapping for model loading"""
         if self.device == "cpu":
             return "cpu"
         elif self.device in ["mps", "cuda"]:
-            return "auto"
+            # Use explicit device mapping instead of "auto" to avoid gpt-oss-20b KeyError
+            return {"": 0}
         else:
             return "auto"
 
@@ -306,6 +345,44 @@ class GPTOss20bMLX:
         # Format prompt with reasoning level
         formatted_prompt = self._format_prompt_with_reasoning(prompt, config.reasoning_level)
 
+        try:
+            # Use MLX generation if it's an MLX model
+            if self._is_mlx_model() and MLX_AVAILABLE:
+                return await self._generate_mlx(formatted_prompt, config)
+            else:
+                return await self._generate_transformers(formatted_prompt, config)
+
+        except Exception as e:
+            logger.error(f"Generation failed: {e}")
+            raise GenerationError(f"Generation failed: {e}")
+
+    async def _generate_mlx(self, prompt: str, config: GenerationConfig) -> str:
+        """Generate using MLX model"""
+        logger.debug("Using MLX generation")
+
+        # Create sampler with the generation parameters
+        sampler = make_sampler(
+            temp=config.temperature,
+            top_p=config.top_p,
+            top_k=config.top_k
+        )
+
+        # Use mlx_lm generate function with sampler
+        response = generate(
+            self.model,
+            self.tokenizer,
+            prompt=prompt,
+            max_tokens=config.max_tokens,
+            sampler=sampler,
+            verbose=False
+        )
+
+        return response.strip()
+
+    async def _generate_transformers(self, formatted_prompt: str, config: GenerationConfig) -> str:
+        """Generate using transformers model"""
+        logger.debug("Using transformers generation")
+
         # Tokenize input
         inputs = self.tokenizer(
             formatted_prompt,
@@ -320,33 +397,35 @@ class GPTOss20bMLX:
 
         # Check token limits
         input_length = inputs["input_ids"].shape[1]
+        logger.debug(f"Input length: {input_length}, max_tokens: {config.max_tokens}")
         if input_length + config.max_tokens > self.config.model.max_sequence_length:
             raise TokenLimitExceededError(f"Total tokens ({input_length + config.max_tokens}) exceed max sequence length")
 
-        try:
-            with torch.no_grad():
-                # Generate with specified parameters
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=config.max_tokens,
-                    temperature=config.temperature,
-                    top_p=config.top_p,
-                    top_k=config.top_k,
-                    repetition_penalty=config.repetition_penalty,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
-                )
+        with torch.no_grad():
+            # Generate with specified parameters
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=config.max_tokens,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                repetition_penalty=config.repetition_penalty,
+                do_sample=True,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
+            )
 
-                # Decode only the generated portion
-                generated_tokens = outputs[0][input_length:]
-                generated_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            logger.debug(f"Outputs shape: {outputs.shape}, input_length: {input_length}")
 
-                return generated_text.strip()
+            # Decode only the generated portion
+            if outputs.shape[1] <= input_length:
+                logger.error(f"No new tokens generated. Output length: {outputs.shape[1]}, Input length: {input_length}")
+                return "I'm sorry, I couldn't generate a response. Please try again."
 
-        except Exception as e:
-            logger.error(f"Generation failed: {e}")
-            raise GenerationError(f"Generation failed: {e}")
+            generated_tokens = outputs[0][input_length:]
+            generated_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+            return generated_text.strip()
     
     async def generate_stream(
         self,

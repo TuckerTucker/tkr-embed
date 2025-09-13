@@ -69,7 +69,7 @@ debug: true
 
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
   reload: true
 
 model:

@@ -8,7 +8,7 @@ debug: true
 # Server Configuration - Development friendly
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
   workers: 1
   reload: true        # Auto-reload on code changes
   log_level: "DEBUG"  # Verbose logging
@@ -17,11 +17,11 @@ server:
 
 # Model Configuration - Skip loading for faster startup
 model:
-  model_path: "OpenSearch-AI/Ops-MM-embedding-v1-7B"
-  quantization: "auto"  # auto, q4, q8, none
+  model_path: "NexaAI/gpt-oss-20b-MLX-4bit"
+  quantization: "none"  
   cache_dir: "./models"
-  device: "auto"  # auto, cpu, gpu
-  max_sequence_length: 2048
+  device: "auto"  
+  max_sequence_length: 4096
   trust_remote_code: true
 
 # Security Configuration - Relaxed for development

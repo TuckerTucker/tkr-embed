@@ -230,7 +230,7 @@ export class MCPToolsService extends BaseService {
         examples: [
           '{"service": "Dashboard", "level": "ERROR", "limit": 10}'
         ],
-        lastUsed: new Date(Date.now() - 1800000).toISOString(),
+        lastUsed: new Date(Date.now() - 1800800).toISOString(),
         usageCount: 78,
       },
       {

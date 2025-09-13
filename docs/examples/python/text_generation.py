@@ -15,7 +15,7 @@ from typing import Optional, Dict, Any
 class TkrEmbedClient:
     """Client for tkr-embed generation API"""
 
-    def __init__(self, base_url: str = "http://localhost:8000", api_key: Optional[str] = None):
+    def __init__(self, base_url: str = "http://localhost:8008", api_key: Optional[str] = None):
         self.base_url = base_url
         self.api_key = api_key
         self.client = httpx.AsyncClient()
@@ -266,5 +266,5 @@ if __name__ == "__main__":
     print("\n✅ All examples completed!")
     print("\nNext steps:")
     print("1. Set your actual API key in the examples")
-    print("2. Ensure the server is running on http://localhost:8000")
+    print("2. Ensure the server is running on http://localhost:8008")
     print("3. Modify prompts and parameters for your use case")

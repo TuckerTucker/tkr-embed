@@ -27,7 +27,7 @@ class Environment(Enum):
 class ServerConfig:
     """Server configuration"""
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8008
     workers: int = 1
     reload: bool = False
     log_level: str = "INFO"

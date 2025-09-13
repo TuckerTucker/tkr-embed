@@ -6,7 +6,7 @@ This directory contains practical cURL examples for testing and integrating with
 
 Before running these examples, ensure:
 
-1. The tkr-embed server is running on `http://localhost:8000`
+1. The tkr-embed server is running on `http://localhost:8008`
 2. You have a valid API key (replace `your-api-key-here` in examples)
 3. cURL is installed on your system
 
@@ -15,13 +15,13 @@ Before running these examples, ensure:
 ### 1. Health Check
 
 ```bash
-curl -X GET http://localhost:8000/health
+curl -X GET http://localhost:8008/health
 ```
 
 ### 2. Model Information
 
 ```bash
-curl -X GET http://localhost:8000/info
+curl -X GET http://localhost:8008/info
 ```
 
 ## Text Generation Examples
@@ -29,7 +29,7 @@ curl -X GET http://localhost:8000/info
 ### Basic Text Generation
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -43,7 +43,7 @@ curl -X POST http://localhost:8000/generate \
 ### Low Reasoning (Fast Response)
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -57,7 +57,7 @@ curl -X POST http://localhost:8000/generate \
 ### High Reasoning (Detailed Analysis)
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -73,7 +73,7 @@ curl -X POST http://localhost:8000/generate \
 ### Creative Writing (High Temperature)
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -88,7 +88,7 @@ curl -X POST http://localhost:8000/generate \
 ### Technical Documentation (Low Temperature)
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -105,7 +105,7 @@ curl -X POST http://localhost:8000/generate \
 ### Basic Chat
 
 ```bash
-curl -X POST http://localhost:8000/chat \
+curl -X POST http://localhost:8008/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -121,7 +121,7 @@ curl -X POST http://localhost:8000/chat \
 ### Chat with System Prompt
 
 ```bash
-curl -X POST http://localhost:8000/chat \
+curl -X POST http://localhost:8008/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -138,7 +138,7 @@ curl -X POST http://localhost:8000/chat \
 ### Multi-turn Conversation
 
 ```bash
-curl -X POST http://localhost:8000/chat \
+curl -X POST http://localhost:8008/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -159,7 +159,7 @@ curl -X POST http://localhost:8000/chat \
 ### Basic Streaming
 
 ```bash
-curl -X POST http://localhost:8000/stream \
+curl -X POST http://localhost:8008/stream \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -H "Accept: text/event-stream" \
@@ -177,7 +177,7 @@ curl -X POST http://localhost:8000/stream \
 Save the streaming output to a file and process it:
 
 ```bash
-curl -X POST http://localhost:8000/stream \
+curl -X POST http://localhost:8008/stream \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -H "Accept: text/event-stream" \
@@ -208,21 +208,21 @@ Test different creativity levels:
 
 ```bash
 # Conservative (temperature 0.1)
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Complete this sentence: The future of AI is", "max_tokens": 50, "temperature": 0.1}' \
   | jq -r '.generated_text'
 
 # Balanced (temperature 0.7)
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Complete this sentence: The future of AI is", "max_tokens": 50, "temperature": 0.7}' \
   | jq -r '.generated_text'
 
 # Creative (temperature 1.5)
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Complete this sentence: The future of AI is", "max_tokens": 50, "temperature": 1.5}' \
@@ -233,14 +233,14 @@ curl -X POST http://localhost:8000/generate \
 
 ```bash
 # Quick response
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Explain blockchain", "reasoning_level": "low", "max_tokens": 100}' \
   | jq -r '.generated_text'
 
 # Detailed explanation
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Explain blockchain", "reasoning_level": "high", "max_tokens": 300}' \
@@ -252,7 +252,7 @@ curl -X POST http://localhost:8000/generate \
 ### Invalid API Key
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: invalid-key" \
   -d '{"text": "Hello world"}' \
@@ -263,14 +263,14 @@ curl -X POST http://localhost:8000/generate \
 
 ```bash
 # Temperature out of range
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Hello", "temperature": 3.0}' \
   -w "Status: %{http_code}\n"
 
 # Empty prompt
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "", "max_tokens": 100}' \
@@ -282,7 +282,7 @@ curl -X POST http://localhost:8000/generate \
 ### Measure Response Time
 
 ```bash
-curl -X POST http://localhost:8000/generate \
+curl -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{
@@ -301,7 +301,7 @@ Test multiple requests simultaneously:
 ```bash
 # Run 5 concurrent requests
 for i in {1..5}; do
-  curl -X POST http://localhost:8000/generate \
+  curl -X POST http://localhost:8008/generate \
     -H "Content-Type: application/json" \
     -H "X-API-Key: your-api-key-here" \
     -d "{\"text\":\"Request $i: Explain AI\",\"max_tokens\":100}" \
@@ -330,7 +330,7 @@ wait
 # performance_test.sh
 
 API_KEY="your-api-key-here"
-BASE_URL="http://localhost:8000"
+BASE_URL="http://localhost:8008"
 
 echo "Testing tkr-embed performance..."
 
@@ -370,12 +370,12 @@ chmod +x performance_test.sh
 
 1. **Connection refused**: Server not running
    ```bash
-   curl -I http://localhost:8000/health
+   curl -I http://localhost:8008/health
    ```
 
 2. **401 Unauthorized**: Invalid API key
    ```bash
-   curl -H "X-API-Key: your-api-key" http://localhost:8000/health
+   curl -H "X-API-Key: your-api-key" http://localhost:8008/health
    ```
 
 3. **429 Rate Limited**: Too many requests
@@ -391,7 +391,7 @@ chmod +x performance_test.sh
 Add verbose output to see full request/response:
 
 ```bash
-curl -v -X POST http://localhost:8000/generate \
+curl -v -X POST http://localhost:8008/generate \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key-here" \
   -d '{"text": "Hello", "max_tokens": 50}'

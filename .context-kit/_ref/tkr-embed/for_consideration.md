@@ -129,7 +129,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY . .
-EXPOSE 8000
+EXPOSE 8008
 
 CMD ["python", "server.py", "config.yaml"]
 ```
@@ -154,7 +154,7 @@ class Config(BaseModel):
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "127.0.0.1"),
-                port=int(os.getenv("SERVER_PORT", "8000")),
+                port=int(os.getenv("SERVER_PORT", "8008")),
             )
         )
 ```
@@ -235,7 +235,7 @@ async def load_test():
         tasks = []
         for i in range(100):
             task = session.post(
-                "http://localhost:8000/embed",
+                "http://localhost:8008/embed",
                 json={"text": f"test text {i}"}
             )
             tasks.append(task)

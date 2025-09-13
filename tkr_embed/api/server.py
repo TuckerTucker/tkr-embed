@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI):
         model_instance = GPTOss20bMLX(
             model_path=getattr(config.model, 'model_path', 'microsoft/gpt-oss-20b'),
             quantization=getattr(config.model, 'quantization', 'auto'),
+            device=getattr(config.model, 'device', 'auto'),
             cache_dir=getattr(config.model, 'cache_dir', './models')
         )
 
@@ -464,7 +465,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "tkr_embed.api.server:app",
         host="0.0.0.0",
-        port=8000,
+        port=8008,
         log_level="info",
         reload=False
     )

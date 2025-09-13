@@ -14,7 +14,7 @@ import sys
 
 async def test_server_endpoints():
     """Test all server endpoints"""
-    base_url = "http://localhost:8000"
+    base_url = "http://localhost:8008"
     
     async with aiohttp.ClientSession() as session:
         print("🔍 Testing server endpoints...")
@@ -96,7 +96,7 @@ def start_server():
         "python", "-m", "uvicorn", 
         "tkr_embed.api.server:app",
         "--host", "0.0.0.0",
-        "--port", "8000",
+        "--port", "8008",
         "--log-level", "info"
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
@@ -115,7 +115,7 @@ async def main():
     # Check if server is already running
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:8000/health") as response:
+            async with session.get("http://localhost:8008/health") as response:
                 if response.status == 200:
                     print("📡 Server already running, testing endpoints...")
                     await test_server_endpoints()

@@ -120,7 +120,7 @@ quantization:
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 8008
   workers: 1
 
 embedding:
@@ -150,7 +150,7 @@ quantization:
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 8008
   workers: 1
 
 embedding:

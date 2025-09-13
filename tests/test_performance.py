@@ -53,7 +53,7 @@ class PerformanceMetrics:
 class PerformanceTestSuite:
     """Comprehensive performance testing suite"""
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "http://localhost:8008"):
         self.base_url = base_url
         self.test_results: List[PerformanceMetrics] = []
         self.server_process: Optional[subprocess.Popen] = None

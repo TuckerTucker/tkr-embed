@@ -81,9 +81,9 @@ fi
 # Start the server
 echo ""
 echo "🌟 Starting server..."
-echo "   Server will be available at: http://localhost:8000"
-echo "   API documentation: http://localhost:8000/docs"
-echo "   Health check: http://localhost:8000/health"
+echo "   Server will be available at: http://localhost:8008"
+echo "   API documentation: http://localhost:8008/docs"
+echo "   Health check: http://localhost:8008/health"
 echo ""
 echo "Press Ctrl+C to stop the server"
 echo "============================================================="
@@ -91,7 +91,7 @@ echo "============================================================="
 # Start with uvicorn
 exec uvicorn tkr_embed.api.server:app \
     --host 0.0.0.0 \
-    --port 8000 \
+    --port 8008 \
     --workers 1 \
     --access-log \
     --log-level info

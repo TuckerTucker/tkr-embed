@@ -54,7 +54,7 @@ class LoadTestResult:
 @dataclass
 class LoadTestConfig:
     """Configuration for load testing"""
-    base_url: str = "http://localhost:8000"
+    base_url: str = "http://localhost:8008"
     max_concurrent_users: int = 100
     test_duration_seconds: int = 300
     ramp_up_seconds: int = 60

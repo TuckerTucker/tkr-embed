@@ -34,7 +34,7 @@ async def test_server_infrastructure():
     server_running = False
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:8000/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
+            async with session.get("http://localhost:8008/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
                 if response.status == 200:
                     server_running = True
                     logger.info("✅ Server already running")
@@ -60,7 +60,7 @@ async def test_server_infrastructure():
             while wait_time < max_wait:
                 try:
                     async with aiohttp.ClientSession() as session:
-                        async with session.get("http://localhost:8000/health", timeout=aiohttp.ClientTimeout(total=2)) as response:
+                        async with session.get("http://localhost:8008/health", timeout=aiohttp.ClientTimeout(total=2)) as response:
                             if response.status == 200:
                                 logger.info(f"✅ Server started in {wait_time}s")
                                 break
@@ -80,7 +80,7 @@ async def test_server_infrastructure():
             # Test 1: Health check
             logger.info("\n1. Testing health endpoint...")
             try:
-                async with session.get("http://localhost:8000/health") as response:
+                async with session.get("http://localhost:8008/health") as response:
                     health_data = await response.json()
                     logger.info(f"   Status: {health_data.get('status', 'unknown')}")
                     logger.info(f"   Model loaded: {health_data.get('model_loaded', False)}")
@@ -93,7 +93,7 @@ async def test_server_infrastructure():
             # Test 2: Model info
             logger.info("\n2. Testing model info endpoint...")
             try:
-                async with session.get("http://localhost:8000/info") as response:
+                async with session.get("http://localhost:8008/info") as response:
                     if response.status == 200:
                         info_data = await response.json()
                         logger.info(f"   Model: {info_data.get('model_path', 'unknown')}")
@@ -115,7 +115,7 @@ async def test_server_infrastructure():
                 }
 
                 start_time = time.time()
-                async with session.post("http://localhost:8000/generate", json=payload) as response:
+                async with session.post("http://localhost:8008/generate", json=payload) as response:
                     end_time = time.time()
 
                     if response.status == 200:
@@ -147,7 +147,7 @@ async def test_server_infrastructure():
                     "reasoning_level": "medium"
                 }
 
-                async with session.post("http://localhost:8000/chat", json=payload) as response:
+                async with session.post("http://localhost:8008/chat", json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
                         logger.info(f"   Chat response: {data.get('response', '')[:100]}...")
@@ -172,7 +172,7 @@ async def test_server_infrastructure():
                 }
 
                 chunks_received = 0
-                async with session.post("http://localhost:8000/stream", json=payload) as response:
+                async with session.post("http://localhost:8008/stream", json=payload) as response:
                     if response.status == 200:
                         async for line in response.content:
                             if line:
@@ -201,7 +201,7 @@ async def test_server_infrastructure():
                     "reasoning_level": "invalid_level"
                 }
 
-                async with session.post("http://localhost:8000/generate", json=payload) as response:
+                async with session.post("http://localhost:8008/generate", json=payload) as response:
                     if response.status == 422:  # Validation error
                         logger.info("✅ Validation error handling working")
                     else:

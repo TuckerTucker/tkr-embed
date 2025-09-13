@@ -82,7 +82,7 @@ python server.py config_32gb.yaml
 python examples.py
 
 # Or test manually
-curl -X POST "http://127.0.0.1:8000/embed" \
+curl -X POST "http://127.0.0.1:8008/embed" \
      -H "Content-Type: application/json" \
      -d '{"text": "Hello, world!"}'
 ```
@@ -122,7 +122,7 @@ embedding:
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 8008
 
 logging:
   level: "INFO"

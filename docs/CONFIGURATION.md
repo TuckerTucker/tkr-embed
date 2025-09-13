@@ -28,7 +28,7 @@ debug: true
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 8008
 
 model:
   model_path: "microsoft/gpt-oss-20b"
@@ -62,7 +62,7 @@ debug: false
 
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 8008
   workers: 1
 
 model:
@@ -111,7 +111,7 @@ logging:
 |----------|------|---------|-------------|
 | `GENERATION_ENV` | string | `"production"` | Environment mode: development, production, testing |
 | `GENERATION_HOST` | string | `"0.0.0.0"` | Server bind address |
-| `GENERATION_PORT` | integer | `8000` | Server port |
+| `GENERATION_PORT` | integer | `8008` | Server port |
 | `GENERATION_DEBUG` | boolean | `false` | Enable debug mode |
 | `GENERATION_WORKERS` | integer | `1` | Number of worker processes |
 

@@ -92,7 +92,7 @@ async def test_mock_infrastructure():
         while wait_time < max_wait:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get("http://localhost:8000/health", timeout=aiohttp.ClientTimeout(total=2)) as response:
+                    async with session.get("http://localhost:8008/health", timeout=aiohttp.ClientTimeout(total=2)) as response:
                         if response.status == 200:
                             server_ready = True
                             logger.info(f"✅ Server started in {wait_time}s")
@@ -114,7 +114,7 @@ async def test_mock_infrastructure():
 
                 # Test 1: Health endpoint
                 logger.info("\n1. Testing health endpoint...")
-                async with session.get("http://localhost:8000/health") as response:
+                async with session.get("http://localhost:8008/health") as response:
                     if response.status == 200:
                         health_data = await response.json()
                         logger.info(f"   Status: {health_data.get('status')}")
@@ -126,7 +126,7 @@ async def test_mock_infrastructure():
 
                 # Test 2: Model info
                 logger.info("\n2. Testing model info endpoint...")
-                async with session.get("http://localhost:8000/info") as response:
+                async with session.get("http://localhost:8008/info") as response:
                     if response.status == 200:
                         info_data = await response.json()
                         logger.info(f"   Model: {info_data.get('model_path')}")
@@ -145,7 +145,7 @@ async def test_mock_infrastructure():
                     "reasoning_level": "medium"
                 }
 
-                async with session.post("http://localhost:8000/generate", json=payload) as response:
+                async with session.post("http://localhost:8008/generate", json=payload) as response:
                     end_time = time.time()
 
                     if response.status == 200:
@@ -170,7 +170,7 @@ async def test_mock_infrastructure():
                     "reasoning_level": "medium"
                 }
 
-                async with session.post("http://localhost:8000/chat", json=payload) as response:
+                async with session.post("http://localhost:8008/chat", json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
                         logger.info(f"   Chat response: {data.get('response', '')[:100]}...")
@@ -187,7 +187,7 @@ async def test_mock_infrastructure():
                 }
 
                 chunks_received = 0
-                async with session.post("http://localhost:8000/stream", json=payload) as response:
+                async with session.post("http://localhost:8008/stream", json=payload) as response:
                     if response.status == 200:
                         async for line in response.content:
                             if line:
@@ -209,7 +209,7 @@ async def test_mock_infrastructure():
                     "reasoning_level": "invalid"
                 }
 
-                async with session.post("http://localhost:8000/generate", json=payload) as response:
+                async with session.post("http://localhost:8008/generate", json=payload) as response:
                     if response.status == 422:  # Validation error
                         logger.info("✅ Error handling working")
                     else:
