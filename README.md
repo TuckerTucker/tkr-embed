@@ -12,7 +12,7 @@ A high-performance, production-ready multimodal embedding server optimized for A
 
 ### **Model & Performance**
 - **OpenSearch-AI/Ops-MM-embedding-v1-7B** (8.29B parameter multimodal model)
-- **3584-dimensional embeddings** with Qwen2VL architecture
+- **768-dimensional embeddings** with OpenSearch-AI Ops-MM-embedding architecture
 - **Automatic quantization** (Q8_0 for 32GB systems, Q4_0 for 16GB)
 - **Memory efficient** with CPU fallback for compatibility
 

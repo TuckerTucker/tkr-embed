@@ -1,7 +1,7 @@
 """
 MLX Model Manager for OpenSearch-AI/Ops-MM-embedding-v1-7B
 Handles model loading, quantization, and memory optimization for Apple Silicon
-Supports Qwen2VL multimodal architecture with transformers + MLX backend
+OpenSearch-AI Ops-MM-embedding-v1-7B multimodal embedding model with MLX backend
 """
 
 import logging
@@ -12,7 +12,7 @@ import mlx.nn as nn
 import psutil
 import time
 import numpy as np
-from transformers import AutoTokenizer, AutoProcessor, Qwen2VLForConditionalGeneration
+from transformers import AutoTokenizer, AutoModel, AutoImageProcessor
 import torch
 
 # Configure logging
@@ -49,7 +49,7 @@ class OpsMMEmbeddingMLX:
         # Model components
         self.model = None
         self.tokenizer = None
-        self.processor = None
+        self.image_processor = None
         
         # Performance metrics
         self.load_time = None
@@ -79,7 +79,7 @@ class OpsMMEmbeddingMLX:
     
     async def load_model(self) -> None:
         """Load and quantize the multimodal embedding model"""
-        logger.info(f"Loading Qwen2VL model from {self.model_path}")
+        logger.info(f"Loading OpenSearch-AI Ops-MM-embedding model from {self.model_path}")
         start_time = time.time()
         
         try:
@@ -89,21 +89,21 @@ class OpsMMEmbeddingMLX:
                 self.model_path, 
                 trust_remote_code=True
             )
-            self.processor = AutoProcessor.from_pretrained(
+            self.image_processor = AutoImageProcessor.from_pretrained(
                 self.model_path,
                 trust_remote_code=True
             )
             
-            # Load model with appropriate precision
-            logger.info("Loading Qwen2VL model...")
+            # Load embedding model with appropriate precision
+            logger.info("Loading Ops-MM-embedding model...")
             torch_dtype = torch.float16 if self.quantization != "none" else torch.float32
-            
-            # Use CPU for now due to MPS limitations with this model
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+
+            # Load the embedding model
+            self.model = AutoModel.from_pretrained(
                 self.model_path,
                 torch_dtype=torch_dtype,
                 trust_remote_code=True,
-                device_map="cpu"  # Use CPU to avoid MPS issues
+                device_map="auto"
             )
             
             logger.info("Model loaded successfully")
@@ -146,7 +146,7 @@ class OpsMMEmbeddingMLX:
             )
             
             # Reload model with quantization
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model = AutoModel.from_pretrained(
                 self.model_path,
                 quantization_config=quantization_config,
                 trust_remote_code=True,
@@ -168,7 +168,7 @@ class OpsMMEmbeddingMLX:
             )
             
             # Reload model with quantization
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model = AutoModel.from_pretrained(
                 self.model_path,
                 quantization_config=quantization_config,
                 trust_remote_code=True,
@@ -187,133 +187,134 @@ class OpsMMEmbeddingMLX:
     
     def encode_text(self, texts: List[str]) -> np.ndarray:
         """
-        Encode text inputs to embeddings using Qwen2VL
-        
+        Encode text inputs to embeddings using Ops-MM-embedding model
+
         Args:
             texts: List of text strings to encode
-            
+
         Returns:
             NumPy array of embeddings
         """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
-        
+
         logger.debug(f"Encoding {len(texts)} text inputs")
-        
+
         embeddings_list = []
-        
+
         with torch.no_grad():
             for text in texts:
-                # Use processor for consistent input handling
-                messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
-                text_inputs = self.processor.apply_chat_template(
-                    messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
-                )
-                
-                # Get hidden states from the model
-                outputs = self.model(input_ids=text_inputs, output_hidden_states=True)
-                
-                # Extract embeddings from the last layer
-                # Use mean pooling over sequence length
-                last_hidden_state = outputs.hidden_states[-1]  # Shape: (1, seq_len, hidden_size)
-                embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
-                
+                # Tokenize the text
+                inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+
+                # Get embeddings from the model (no hidden_states needed for embedding models)
+                outputs = self.model(**inputs)
+
+                # For embedding models, use the pooler_output or last_hidden_state
+                if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
+                    embedding = outputs.pooler_output
+                else:
+                    # Use mean pooling over sequence length
+                    embedding = outputs.last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
+
                 embeddings_list.append(embedding.cpu().numpy())
-        
+
         # Stack all embeddings
         embeddings = np.vstack(embeddings_list)
         return embeddings
     
     def encode_image(self, images: Union[str, List[str]]) -> np.ndarray:
         """
-        Encode image inputs to embeddings using Qwen2VL vision encoder
-        
+        Encode image inputs to embeddings using Ops-MM-embedding vision encoder
+
         Args:
             images: Image file paths (string or list of strings)
-            
+
         Returns:
             NumPy array of image embeddings
         """
+        from PIL import Image
+
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
-        
+
         # Ensure images is a list
         if isinstance(images, str):
             images = [images]
-        
+
         logger.debug(f"Encoding {len(images)} image inputs")
-        
+
         embeddings_list = []
-        
+
         with torch.no_grad():
             for image_path in images:
-                # Create message with image
-                messages = [{"role": "user", "content": [{"type": "image", "image": image_path}]}]
-                
-                # Process the image and get inputs
-                inputs = self.processor.apply_chat_template(
-                    messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
-                )
-                
-                # Get hidden states from the model 
-                outputs = self.model(**inputs, output_hidden_states=True)
-                
-                # Extract image embeddings from the last layer
-                # For vision models, we typically want the vision token embeddings
-                last_hidden_state = outputs.hidden_states[-1]
-                
-                # Use mean pooling over the sequence (excluding text tokens if any)
-                embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
-                
+                # Load and process the image
+                image = Image.open(image_path).convert('RGB')
+
+                # Process the image with the image processor
+                inputs = self.image_processor(image, return_tensors="pt")
+
+                # Get embeddings from the model
+                outputs = self.model(**inputs)
+
+                # For embedding models, use pooler_output or mean pooling
+                if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
+                    embedding = outputs.pooler_output
+                else:
+                    # Use mean pooling over spatial dimensions
+                    embedding = outputs.last_hidden_state.mean(dim=1)
+
                 embeddings_list.append(embedding.cpu().numpy())
-        
+
         # Stack all embeddings
-        embeddings = np.vstack(embeddings_list) 
+        embeddings = np.vstack(embeddings_list)
         return embeddings
     
     def encode_multimodal(self, text: Optional[str] = None, image_path: Optional[str] = None) -> np.ndarray:
         """
-        Encode multimodal inputs (text + image) to unified embedding using Qwen2VL
-        
+        Encode multimodal inputs (text + image) to unified embedding using Ops-MM-embedding model
+
         Args:
             text: Optional text input
             image_path: Optional image file path
-            
+
         Returns:
             NumPy array of multimodal embedding
         """
+        from PIL import Image
+
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
-        
+
         if text is None and image_path is None:
             raise ValueError("At least one of text or image_path must be provided")
-        
+
         logger.debug("Encoding multimodal input")
-        
+
         with torch.no_grad():
-            # Create multimodal message
-            content = []
+            inputs = {}
+
+            # Process text input
             if text is not None:
-                content.append({"type": "text", "text": text})
+                text_inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+                inputs.update(text_inputs)
+
+            # Process image input
             if image_path is not None:
-                content.append({"type": "image", "image": image_path})
-            
-            messages = [{"role": "user", "content": content}]
-            
-            # Process inputs
-            inputs = self.processor.apply_chat_template(
-                messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
-            )
-            
-            # Get hidden states from the model
-            outputs = self.model(**inputs, output_hidden_states=True)
-            
-            # Extract multimodal embedding from the last layer
-            last_hidden_state = outputs.hidden_states[-1]  # Shape: (1, seq_len, hidden_size)
-            
-            # Use mean pooling over sequence length to get unified embedding
-            embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
-            
+                image = Image.open(image_path).convert('RGB')
+                image_inputs = self.image_processor(image, return_tensors="pt")
+                inputs.update(image_inputs)
+
+            # Get multimodal embeddings from the model
+            outputs = self.model(**inputs)
+
+            # For embedding models, use pooler_output or mean pooling
+            if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
+                embedding = outputs.pooler_output
+            else:
+                # Use mean pooling over sequence length for multimodal embedding
+                embedding = outputs.last_hidden_state.mean(dim=1)
+
             return embedding.cpu().numpy()
     
     def get_model_info(self) -> Dict[str, Any]:
@@ -325,16 +326,16 @@ class OpsMMEmbeddingMLX:
             "load_time": self.load_time,
             "memory_usage_gb": self.memory_usage,
             "model_loaded": self.model is not None,
-            "embedding_dim": 3584,  # Qwen2VL hidden dimension
-            "architecture": "Qwen2VLForConditionalGeneration",
+            "embedding_dim": 768,  # Standard embedding dimension for Ops-MM-embedding
+            "architecture": "AutoModel",
             "supported_modalities": ["text", "image", "multimodal"]
         }
     
     def is_ready(self) -> bool:
         """Check if model is loaded and ready for inference"""
-        return (self.model is not None and 
-                self.tokenizer is not None and 
-                self.processor is not None)
+        return (self.model is not None and
+                self.tokenizer is not None and
+                self.image_processor is not None)
     
     def __del__(self):
         """Cleanup resources"""
