@@ -21,7 +21,7 @@ admin_router = APIRouter(prefix="/admin", tags=["admin"])
 class CreateAPIKeyRequest(BaseModel):
     """Request to create new API key"""
     name: str = Field(..., description="Name for the API key")
-    permissions: List[str] = Field(default=["embed:text", "embed:image", "embed:multimodal"], description="List of permissions")
+    permissions: List[str] = Field(default=["generate:text", "generate:chat", "generate:stream"], description="List of permissions")
     expires_in_days: Optional[int] = Field(default=None, description="Expiry in days (null for no expiry)")
 
 

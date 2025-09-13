@@ -1,11 +1,13 @@
 """
-Comprehensive error handling for MLX embedding server
+Comprehensive error handling for MLX text generation server
+Updated for GPT-OSS-20B generation workloads with reasoning levels
 """
 
 import sys
 import traceback
 import logging
-from typing import Dict, Any, Optional, Union
+import time
+from typing import Dict, Any, Optional, Union, List
 from datetime import datetime
 import uuid
 from fastapi import HTTPException, Request, Response, status
@@ -17,13 +19,13 @@ import pydantic
 logger = logging.getLogger(__name__)
 
 
-class EmbeddingServerError(Exception):
-    """Base exception for embedding server errors"""
+class GenerationServerError(Exception):
+    """Base exception for generation server errors"""
     
     def __init__(
         self,
         message: str,
-        error_code: str = "EMBEDDING_ERROR",
+        error_code: str = "GENERATION_ERROR",
         status_code: int = 500,
         details: Optional[Dict[str, Any]] = None
     ):
@@ -36,10 +38,10 @@ class EmbeddingServerError(Exception):
         super().__init__(message)
 
 
-class ModelNotReadyError(EmbeddingServerError):
-    """Model is not loaded or ready for inference"""
-    
-    def __init__(self, message: str = "Model is not ready for inference"):
+class ModelNotReadyError(GenerationServerError):
+    """Model is not loaded or ready for generation"""
+
+    def __init__(self, message: str = "Model is not ready for text generation"):
         super().__init__(
             message=message,
             error_code="MODEL_NOT_READY",
@@ -47,7 +49,59 @@ class ModelNotReadyError(EmbeddingServerError):
         )
 
 
-class ModelInferenceError(EmbeddingServerError):
+class TokenLimitExceededError(GenerationServerError):
+    """Generation exceeds token limit"""
+
+    def __init__(self, message: str, requested_tokens: int = None, max_tokens: int = None):
+        details = {}
+        if requested_tokens is not None:
+            details["requested_tokens"] = requested_tokens
+        if max_tokens is not None:
+            details["max_tokens"] = max_tokens
+
+        super().__init__(
+            message=message,
+            error_code="TOKEN_LIMIT_EXCEEDED",
+            status_code=400,
+            details=details
+        )
+
+
+class ReasoningLevelError(GenerationServerError):
+    """Invalid reasoning level specified"""
+
+    def __init__(self, message: str, provided_level: str = None, valid_levels: List[str] = None):
+        details = {}
+        if provided_level:
+            details["provided_level"] = provided_level
+        if valid_levels:
+            details["valid_levels"] = valid_levels
+
+        super().__init__(
+            message=message,
+            error_code="REASONING_LEVEL_ERROR",
+            status_code=400,
+            details=details
+        )
+
+
+class GenerationTimeoutError(GenerationServerError):
+    """Generation request timed out"""
+
+    def __init__(self, message: str, timeout_seconds: float = None):
+        details = {}
+        if timeout_seconds is not None:
+            details["timeout_seconds"] = timeout_seconds
+
+        super().__init__(
+            message=message,
+            error_code="GENERATION_TIMEOUT",
+            status_code=408,
+            details=details
+        )
+
+
+class ModelInferenceError(GenerationServerError):
     """Error during model inference"""
     
     def __init__(self, message: str, original_error: Optional[Exception] = None):
@@ -64,7 +118,7 @@ class ModelInferenceError(EmbeddingServerError):
         )
 
 
-class ValidationError(EmbeddingServerError):
+class ValidationError(GenerationServerError):
     """Input validation error"""
     
     def __init__(self, message: str, field: str = None, value: Any = None):
@@ -82,7 +136,7 @@ class ValidationError(EmbeddingServerError):
         )
 
 
-class ResourceExhaustedError(EmbeddingServerError):
+class ResourceExhaustedError(GenerationServerError):
     """System resources exhausted"""
     
     def __init__(self, message: str, resource_type: str = "unknown"):
@@ -94,7 +148,7 @@ class ResourceExhaustedError(EmbeddingServerError):
         )
 
 
-class ConfigurationError(EmbeddingServerError):
+class ConfigurationError(GenerationServerError):
     """Configuration error"""
     
     def __init__(self, message: str, config_key: str = None):
@@ -115,13 +169,13 @@ class ErrorResponse:
     
     @staticmethod
     def create_response(
-        error: Union[Exception, EmbeddingServerError],
+        error: Union[Exception, GenerationServerError],
         request: Request,
         include_traceback: bool = False
     ) -> Dict[str, Any]:
         """Create standardized error response"""
         
-        if isinstance(error, EmbeddingServerError):
+        if isinstance(error, GenerationServerError):
             error_data = {
                 "error": {
                     "code": error.error_code,
@@ -169,14 +223,14 @@ class ErrorHandlers:
     def __init__(self, include_traceback: bool = False):
         self.include_traceback = include_traceback
     
-    async def embedding_server_error_handler(
+    async def generation_server_error_handler(
         self,
         request: Request,
-        exc: EmbeddingServerError
+        exc: GenerationServerError
     ) -> JSONResponse:
-        """Handle EmbeddingServerError exceptions"""
+        """Handle GenerationServerError exceptions"""
         logger.error(
-            f"EmbeddingServerError: {exc.error_code} - {exc.message}",
+            f"GenerationServerError: {exc.error_code} - {exc.message}",
             extra={
                 "error_id": exc.error_id,
                 "error_code": exc.error_code,
@@ -317,8 +371,8 @@ def create_error_middleware():
                 exc_info=True
             )
             
-            # Convert to EmbeddingServerError for consistent handling
-            server_error = EmbeddingServerError(
+            # Convert to GenerationServerError for consistent handling
+            server_error = GenerationServerError(
                 message="Internal server error occurred",
                 error_code="MIDDLEWARE_ERROR",
                 details={"original_error": str(exc)}
@@ -341,7 +395,7 @@ def setup_error_handlers(app, include_traceback: bool = False):
     handlers = ErrorHandlers(include_traceback=include_traceback)
     
     # Register exception handlers
-    app.add_exception_handler(EmbeddingServerError, handlers.embedding_server_error_handler)
+    app.add_exception_handler(GenerationServerError, handlers.generation_server_error_handler)
     app.add_exception_handler(HTTPException, handlers.http_exception_handler)
     app.add_exception_handler(StarletteHTTPException, handlers.http_exception_handler)
     app.add_exception_handler(RequestValidationError, handlers.validation_error_handler)
@@ -379,25 +433,150 @@ def raise_configuration_error(message: str, config_key: str = None):
     raise ConfigurationError(message, config_key)
 
 
-# Context manager for safe model operations
-class SafeModelOperation:
-    """Context manager for safe model operations with error handling"""
-    
-    def __init__(self, operation_name: str, model_instance=None):
+# Generation-specific error helpers
+def raise_token_limit_exceeded(message: str, requested_tokens: int = None, max_tokens: int = None):
+    """Raise token limit exceeded error"""
+    raise TokenLimitExceededError(message, requested_tokens, max_tokens)
+
+
+def raise_reasoning_level_error(message: str, provided_level: str = None):
+    """Raise reasoning level error"""
+    valid_levels = ["low", "medium", "high"]
+    raise ReasoningLevelError(message, provided_level, valid_levels)
+
+
+def raise_generation_timeout(message: str, timeout_seconds: float = None):
+    """Raise generation timeout error"""
+    raise GenerationTimeoutError(message, timeout_seconds)
+
+
+def validate_reasoning_level(reasoning_level: str) -> str:
+    """Validate and normalize reasoning level"""
+    if not reasoning_level:
+        return "medium"  # Default
+
+    level = reasoning_level.lower().strip()
+    valid_levels = ["low", "medium", "high"]
+
+    if level not in valid_levels:
+        raise_reasoning_level_error(
+            f"Invalid reasoning level: '{reasoning_level}'. Must be one of: {valid_levels}",
+            reasoning_level
+        )
+
+    return level
+
+
+def validate_token_limits(max_tokens: int, system_max_tokens: int = 16384) -> int:
+    """Validate token limits for generation"""
+    if max_tokens <= 0:
+        raise_token_limit_exceeded(
+            "max_tokens must be positive",
+            max_tokens,
+            system_max_tokens
+        )
+
+    if max_tokens > system_max_tokens:
+        raise_token_limit_exceeded(
+            f"Requested {max_tokens} tokens exceeds system limit of {system_max_tokens}",
+            max_tokens,
+            system_max_tokens
+        )
+
+    return max_tokens
+
+
+def check_generation_parameters(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate generation parameters and return normalized config"""
+    normalized_config = config.copy()
+
+    # Validate reasoning level
+    reasoning_level = config.get("reasoning_level", "medium")
+    normalized_config["reasoning_level"] = validate_reasoning_level(reasoning_level)
+
+    # Validate max_tokens
+    max_tokens = config.get("max_tokens", 4096)
+    normalized_config["max_tokens"] = validate_token_limits(max_tokens)
+
+    # Validate temperature
+    temperature = config.get("temperature", 0.7)
+    if not 0.0 <= temperature <= 2.0:
+        raise_validation_error(
+            f"temperature must be between 0.0 and 2.0, got {temperature}",
+            "temperature",
+            temperature
+        )
+
+    # Validate top_p
+    top_p = config.get("top_p", 0.9)
+    if not 0.0 <= top_p <= 1.0:
+        raise_validation_error(
+            f"top_p must be between 0.0 and 1.0, got {top_p}",
+            "top_p",
+            top_p
+        )
+
+    return normalized_config
+
+
+# Context manager for safe generation operations
+class SafeGenerationOperation:
+    """Context manager for safe generation operations with error handling"""
+
+    def __init__(self, operation_name: str, model_instance=None, timeout_seconds: float = None):
         self.operation_name = operation_name
         self.model_instance = model_instance
-    
+        self.timeout_seconds = timeout_seconds
+        self.start_time = None
+
     def __enter__(self):
         if self.model_instance and not self.model_instance.is_ready():
             raise_model_not_ready()
+
+        self.start_time = time.time()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is not None:
-            logger.error(f"Error in {self.operation_name}: {exc_val}")
-            if isinstance(exc_val, (RuntimeError, MemoryError, OSError)):
+            elapsed_time = time.time() - self.start_time if self.start_time else 0
+
+            logger.error(f"Error in {self.operation_name}: {exc_val} (elapsed: {elapsed_time:.2f}s)")
+
+            # Handle timeout errors
+            if self.timeout_seconds and elapsed_time > self.timeout_seconds:
+                raise_generation_timeout(
+                    f"Generation timed out after {elapsed_time:.2f} seconds",
+                    self.timeout_seconds
+                )
+
+            # Handle memory errors
+            if isinstance(exc_val, MemoryError):
+                raise_resource_exhausted(
+                    f"Out of memory during {self.operation_name}",
+                    "memory"
+                )
+
+            # Handle runtime errors
+            if isinstance(exc_val, RuntimeError):
+                if "token" in str(exc_val).lower():
+                    raise_token_limit_exceeded(
+                        f"Token limit error in {self.operation_name}: {exc_val}"
+                    )
+                else:
+                    raise_inference_error(
+                        f"Generation operation failed: {self.operation_name}",
+                        exc_val
+                    )
+
+            # Handle other errors
+            if isinstance(exc_val, (OSError, IOError)):
                 raise_inference_error(
-                    f"Model operation failed: {self.operation_name}",
+                    f"I/O error during {self.operation_name}",
                     exc_val
                 )
+
         return False  # Don't suppress exceptions
+
+
+# Legacy support - keep the old class name for backward compatibility
+SafeModelOperation = SafeGenerationOperation

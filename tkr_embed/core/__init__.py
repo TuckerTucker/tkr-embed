@@ -1,1 +1,1 @@
-"""Core MLX embedding components"""
+"""Core MLX generation components"""

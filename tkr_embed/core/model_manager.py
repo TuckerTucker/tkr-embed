@@ -1,55 +1,110 @@
 """
-MLX Model Manager for OpenSearch-AI/Ops-MM-embedding-v1-7B
+MLX Model Manager for GPT-OSS-20B
 Handles model loading, quantization, and memory optimization for Apple Silicon
-Supports Qwen2VL multimodal architecture with transformers + MLX backend
+Supports text generation with reasoning levels and streaming capabilities
 """
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, AsyncIterator
 import mlx.core as mx
 import mlx.nn as nn
 import psutil
 import time
-import numpy as np
-from transformers import AutoTokenizer, AutoProcessor, Qwen2VLForConditionalGeneration
+import asyncio
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 import torch
+from threading import Thread
+from ..config import get_config
+try:
+    import sys
+    sys.path.append(str(Path(__file__).parent.parent.parent / ".context-kit" / "_specs"))
+    from integration_contracts import (
+        IGPTOss20bModel, GenerationConfig, ReasoningLevel,
+        ModelNotReadyError, TokenLimitExceededError, GenerationError
+    )
+except ImportError:
+    # Fallback if integration contracts not available
+    from typing import Protocol
+    from enum import Enum
+    from dataclasses import dataclass
+
+    class ReasoningLevel(str, Enum):
+        LOW = "low"
+        MEDIUM = "medium"
+        HIGH = "high"
+
+    @dataclass
+    class GenerationConfig:
+        max_tokens: int = 4096
+        temperature: float = 0.7
+        top_p: float = 0.9
+        top_k: int = 50
+        reasoning_level: ReasoningLevel = ReasoningLevel.MEDIUM
+        streaming: bool = False
+        repetition_penalty: float = 1.1
+
+    class GenerationError(Exception):
+        pass
+
+    class ModelNotReadyError(GenerationError):
+        pass
+
+    class TokenLimitExceededError(GenerationError):
+        pass
+
+    class IGPTOss20bModel(Protocol):
+        async def load_model(self) -> None: ...
+        async def generate(self, prompt: str, config: GenerationConfig) -> str: ...
+        async def generate_stream(self, prompt: str, config: GenerationConfig) -> AsyncIterator[str]: ...
+        async def chat(self, messages: List[Dict[str, str]], config: GenerationConfig) -> str: ...
+        def get_model_info(self) -> Dict[str, Any]: ...
+        def is_ready(self) -> bool: ...
+        def get_memory_usage(self) -> float: ...
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class OpsMMEmbeddingMLX:
-    """MLX implementation of Ops-MM-embedding-v1-7B multimodal embedding model"""
+class GPTOss20bMLX:
+    """MLX implementation of GPT-OSS-20B text generation model"""
     
     def __init__(
         self,
-        model_path: str = "OpenSearch-AI/Ops-MM-embedding-v1-7B",
-        quantization: str = "auto",  # auto, q4, q8, or none
-        device: str = "gpu",
+        model_path: str = "openai/gpt-oss-20b",
+        quantization: str = "auto",  # auto, q4, q8, mxfp4, or none
+        device: str = "auto",
         cache_dir: str = "./models"
     ):
         """
-        Initialize the MLX multimodal embedding model.
-        
+        Initialize the MLX text generation model.
+
         Args:
-            model_path: Hugging Face model identifier
-            quantization: Quantization strategy (auto, q4, q8, none)
-            device: Target device (gpu for Metal)
+            model_path: Hugging Face model identifier (default: openai/gpt-oss-20b)
+            quantization: Quantization strategy (auto, q4, q8, mxfp4, none)
+            device: Target device (auto, cpu, gpu)
             cache_dir: Local model cache directory
         """
-        logger.info(f"Initializing OpsMMEmbeddingMLX with model: {model_path}")
-        
+        logger.info(f"Initializing GPTOss20bMLX with model: {model_path}")
+
         self.model_path = model_path
-        self.device = device
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
-        
+
         # Model components
         self.model = None
         self.tokenizer = None
-        self.processor = None
+
+        # Generation state
+        self.reasoning_prompts = {
+            ReasoningLevel.LOW: "Answer directly and concisely.",
+            ReasoningLevel.MEDIUM: "Think through this step by step and provide a detailed answer.",
+            ReasoningLevel.HIGH: "Carefully analyze this problem from multiple angles, show your reasoning process, and provide a comprehensive answer."
+        }
+
+        # Get configuration
+        self.config = get_config()
         
         # Performance metrics
         self.load_time = None
@@ -60,124 +115,167 @@ class OpsMMEmbeddingMLX:
             self.quantization = self._detect_optimal_quantization()
         else:
             self.quantization = quantization
-            
+
+        # Auto-detect device if needed
+        if device == "auto":
+            self.device = self._detect_optimal_device()
+        else:
+            self.device = device
+
         logger.info(f"Using quantization: {self.quantization}")
+        logger.info(f"Using device: {self.device}")
         
     def _detect_optimal_quantization(self) -> str:
-        """Auto-detect optimal quantization based on system memory"""
+        """Auto-detect optimal quantization based on system memory for 21B model"""
         memory_gb = psutil.virtual_memory().total // (1024**3)
-        
+
+        # GPT-OSS-20B requires significant memory
         if memory_gb <= 16:
-            logger.info("16GB or less detected - using Q4_0 quantization")
+            logger.info("16GB or less detected - using Q4 quantization for 21B model")
             return "q4"
         elif memory_gb <= 32:
-            logger.info("32GB or less detected - using Q8_0 quantization") 
+            logger.info("32GB detected - using Q8 quantization for optimal performance")
             return "q8"
+        elif memory_gb <= 64:
+            logger.info("64GB detected - using MXFP4 for best quality/performance balance")
+            return "mxfp4"
         else:
             logger.info("64GB+ detected - using full precision")
             return "none"
+
+    def _detect_optimal_device(self) -> str:
+        """Auto-detect optimal device (prioritize Metal GPU on Apple Silicon)"""
+        if torch.backends.mps.is_available():
+            logger.info("Apple Silicon Metal GPU detected - using MPS")
+            return "mps"
+        elif torch.cuda.is_available():
+            logger.info("CUDA GPU detected")
+            return "cuda"
+        else:
+            logger.info("No GPU acceleration detected - using CPU")
+            return "cpu"
     
     async def load_model(self) -> None:
-        """Load and quantize the multimodal embedding model"""
-        logger.info(f"Loading Qwen2VL model from {self.model_path}")
+        """Load and quantize the GPT-OSS-20B text generation model"""
+        logger.info(f"Loading GPT-OSS-20B model from {self.model_path}")
         start_time = time.time()
-        
+
         try:
-            # Load tokenizer and processor
-            logger.info("Loading tokenizer and processor...")
+            # Load tokenizer
+            logger.info("Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_path, 
-                trust_remote_code=True
-            )
-            self.processor = AutoProcessor.from_pretrained(
                 self.model_path,
-                trust_remote_code=True
-            )
-            
-            # Load model with appropriate precision
-            logger.info("Loading Qwen2VL model...")
-            torch_dtype = torch.float16 if self.quantization != "none" else torch.float32
-            
-            # Use CPU for now due to MPS limitations with this model
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                self.model_path,
-                torch_dtype=torch_dtype,
                 trust_remote_code=True,
-                device_map="cpu"  # Use CPU to avoid MPS issues
+                cache_dir=self.cache_dir
             )
-            
+
+            # Add pad token if missing
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+
+            # Load model with appropriate precision and device
+            logger.info(f"Loading GPT-OSS-20B model on {self.device}...")
+            torch_dtype = self._get_torch_dtype()
+            device_map = self._get_device_map()
+
+            # Load model with quantization if specified
+            if self.quantization in ["q4", "q8"]:
+                logger.info(f"Loading model with {self.quantization.upper()} quantization...")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=True,
+                    cache_dir=self.cache_dir,
+                    quantization_config=self._get_quantization_config(),
+                    device_map=device_map,
+                    low_cpu_mem_usage=True
+                )
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=True,
+                    cache_dir=self.cache_dir,
+                    device_map=device_map,
+                    low_cpu_mem_usage=True
+                )
+
             logger.info("Model loaded successfully")
-            
+
             # Convert to evaluation mode
             self.model.eval()
-            
-            # Apply quantization if specified
-            if self.quantization == "q4":
-                logger.info("Applying 4-bit quantization...")
-                self._quantize_4bit()
-            elif self.quantization == "q8":
-                logger.info("Applying 8-bit quantization...")
-                self._quantize_8bit()
-            else:
-                logger.info("Using full precision (no quantization)")
-            
+
             # Record performance metrics
             self.load_time = time.time() - start_time
             self.memory_usage = self._get_memory_usage()
-            
+
             logger.info(f"Model ready! Load time: {self.load_time:.1f}s, Memory: {self.memory_usage:.1f}GB")
-            
+
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise
-    
-    def _quantize_4bit(self) -> None:
-        """Apply 4-bit quantization for 16GB systems using BitsAndBytes"""
+
+    def _get_torch_dtype(self) -> torch.dtype:
+        """Get appropriate torch dtype based on quantization"""
+        if self.quantization == "none":
+            return torch.float32
+        else:
+            return torch.float16
+
+    def _get_device_map(self) -> str:
+        """Get device mapping for model loading"""
+        if self.device == "cpu":
+            return "cpu"
+        elif self.device in ["mps", "cuda"]:
+            return "auto"
+        else:
+            return "auto"
+
+    def _get_quantization_config(self):
+        """Get quantization configuration"""
         try:
             from transformers import BitsAndBytesConfig
-            import torch
-            
-            logger.info("Converting to 4-bit precision with BitsAndBytes...")
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
-            )
-            
-            # Reload model with quantization
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                self.model_path,
-                quantization_config=quantization_config,
-                trust_remote_code=True,
-                device_map="auto"
-            )
-            logger.info("4-bit quantization complete")
+
+            if self.quantization == "q4":
+                return BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4"
+                )
+            elif self.quantization == "q8":
+                return BitsAndBytesConfig(
+                    load_in_8bit=True
+                )
         except ImportError:
-            logger.warning("BitsAndBytes not available, using float16 instead")
-            self.model = self.model.half()
+            logger.warning("BitsAndBytes not available, falling back to standard loading")
+            return None
+
+        return None
     
-    def _quantize_8bit(self) -> None:
-        """Apply 8-bit quantization for 32GB systems using BitsAndBytes"""
-        try:
-            from transformers import BitsAndBytesConfig
-            
-            logger.info("Converting to 8-bit precision with BitsAndBytes...")
-            quantization_config = BitsAndBytesConfig(
-                load_in_8bit=True
-            )
-            
-            # Reload model with quantization
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                self.model_path,
-                quantization_config=quantization_config,
-                trust_remote_code=True,
-                device_map="auto"
-            )
-            logger.info("8-bit quantization complete")
-        except ImportError:
-            logger.warning("BitsAndBytes not available, using float16 instead")
-            self.model = self.model.half()
+    def _format_prompt_with_reasoning(self, prompt: str, reasoning_level: ReasoningLevel) -> str:
+        """Format prompt with reasoning level instructions"""
+        reasoning_instruction = self.reasoning_prompts.get(reasoning_level, self.reasoning_prompts[ReasoningLevel.MEDIUM])
+        return f"{reasoning_instruction}\n\n{prompt}"
+
+    def _format_chat_messages(self, messages: List[Dict[str, str]]) -> str:
+        """Format chat messages into a single prompt"""
+        formatted_parts = []
+
+        for message in messages:
+            role = message.get("role", "user")
+            content = message.get("content", "")
+
+            if role == "system":
+                formatted_parts.append(f"System: {content}")
+            elif role == "user":
+                formatted_parts.append(f"Human: {content}")
+            elif role == "assistant":
+                formatted_parts.append(f"Assistant: {content}")
+
+        # Add final assistant prompt
+        formatted_parts.append("Assistant:")
+        return "\n\n".join(formatted_parts)
     
     def _get_memory_usage(self) -> float:
         """Get current memory usage in GB"""
@@ -185,136 +283,187 @@ class OpsMMEmbeddingMLX:
         memory_bytes = process.memory_info().rss
         return memory_bytes / (1024**3)
     
-    def encode_text(self, texts: List[str]) -> np.ndarray:
+    async def generate(
+        self,
+        prompt: str,
+        config: GenerationConfig
+    ) -> str:
         """
-        Encode text inputs to embeddings using Qwen2VL
-        
+        Generate text completion for a single prompt
+
         Args:
-            texts: List of text strings to encode
-            
+            prompt: Input text prompt
+            config: Generation configuration
+
         Returns:
-            NumPy array of embeddings
+            Generated text
         """
-        if self.model is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-        
-        logger.debug(f"Encoding {len(texts)} text inputs")
-        
-        embeddings_list = []
-        
-        with torch.no_grad():
-            for text in texts:
-                # Use processor for consistent input handling
-                messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
-                text_inputs = self.processor.apply_chat_template(
-                    messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
+        if not self.is_ready():
+            raise ModelNotReadyError("Model not loaded. Call load_model() first.")
+
+        logger.debug(f"Generating text for prompt: {prompt[:100]}...")
+
+        # Format prompt with reasoning level
+        formatted_prompt = self._format_prompt_with_reasoning(prompt, config.reasoning_level)
+
+        # Tokenize input
+        inputs = self.tokenizer(
+            formatted_prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.config.model.max_sequence_length - config.max_tokens
+        )
+
+        # Move to appropriate device
+        if self.device != "cpu":
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        # Check token limits
+        input_length = inputs["input_ids"].shape[1]
+        if input_length + config.max_tokens > self.config.model.max_sequence_length:
+            raise TokenLimitExceededError(f"Total tokens ({input_length + config.max_tokens}) exceed max sequence length")
+
+        try:
+            with torch.no_grad():
+                # Generate with specified parameters
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=config.max_tokens,
+                    temperature=config.temperature,
+                    top_p=config.top_p,
+                    top_k=config.top_k,
+                    repetition_penalty=config.repetition_penalty,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
                 )
-                
-                # Get hidden states from the model
-                outputs = self.model(input_ids=text_inputs, output_hidden_states=True)
-                
-                # Extract embeddings from the last layer
-                # Use mean pooling over sequence length
-                last_hidden_state = outputs.hidden_states[-1]  # Shape: (1, seq_len, hidden_size)
-                embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
-                
-                embeddings_list.append(embedding.cpu().numpy())
-        
-        # Stack all embeddings
-        embeddings = np.vstack(embeddings_list)
-        return embeddings
+
+                # Decode only the generated portion
+                generated_tokens = outputs[0][input_length:]
+                generated_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+                return generated_text.strip()
+
+        except Exception as e:
+            logger.error(f"Generation failed: {e}")
+            raise GenerationError(f"Generation failed: {e}")
     
-    def encode_image(self, images: Union[str, List[str]]) -> np.ndarray:
+    async def generate_stream(
+        self,
+        prompt: str,
+        config: GenerationConfig
+    ) -> AsyncIterator[str]:
         """
-        Encode image inputs to embeddings using Qwen2VL vision encoder
-        
+        Stream text generation token by token
+
         Args:
-            images: Image file paths (string or list of strings)
-            
-        Returns:
-            NumPy array of image embeddings
+            prompt: Input text prompt
+            config: Generation configuration
+
+        Yields:
+            Generated text chunks
         """
-        if self.model is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-        
-        # Ensure images is a list
-        if isinstance(images, str):
-            images = [images]
-        
-        logger.debug(f"Encoding {len(images)} image inputs")
-        
-        embeddings_list = []
-        
-        with torch.no_grad():
-            for image_path in images:
-                # Create message with image
-                messages = [{"role": "user", "content": [{"type": "image", "image": image_path}]}]
-                
-                # Process the image and get inputs
-                inputs = self.processor.apply_chat_template(
-                    messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
-                )
-                
-                # Get hidden states from the model 
-                outputs = self.model(**inputs, output_hidden_states=True)
-                
-                # Extract image embeddings from the last layer
-                # For vision models, we typically want the vision token embeddings
-                last_hidden_state = outputs.hidden_states[-1]
-                
-                # Use mean pooling over the sequence (excluding text tokens if any)
-                embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
-                
-                embeddings_list.append(embedding.cpu().numpy())
-        
-        # Stack all embeddings
-        embeddings = np.vstack(embeddings_list) 
-        return embeddings
-    
-    def encode_multimodal(self, text: Optional[str] = None, image_path: Optional[str] = None) -> np.ndarray:
-        """
-        Encode multimodal inputs (text + image) to unified embedding using Qwen2VL
-        
-        Args:
-            text: Optional text input
-            image_path: Optional image file path
-            
-        Returns:
-            NumPy array of multimodal embedding
-        """
-        if self.model is None:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-        
-        if text is None and image_path is None:
-            raise ValueError("At least one of text or image_path must be provided")
-        
-        logger.debug("Encoding multimodal input")
-        
-        with torch.no_grad():
-            # Create multimodal message
-            content = []
-            if text is not None:
-                content.append({"type": "text", "text": text})
-            if image_path is not None:
-                content.append({"type": "image", "image": image_path})
-            
-            messages = [{"role": "user", "content": content}]
-            
-            # Process inputs
-            inputs = self.processor.apply_chat_template(
-                messages, add_generation_prompt=False, tokenize=True, return_tensors="pt"
+        if not self.is_ready():
+            raise ModelNotReadyError("Model not loaded. Call load_model() first.")
+
+        if not config.streaming:
+            # Non-streaming fallback
+            result = await self.generate(prompt, config)
+            yield result
+            return
+
+        logger.debug(f"Streaming generation for prompt: {prompt[:100]}...")
+
+        # Format prompt with reasoning level
+        formatted_prompt = self._format_prompt_with_reasoning(prompt, config.reasoning_level)
+
+        # Tokenize input
+        inputs = self.tokenizer(
+            formatted_prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self.config.model.max_sequence_length - config.max_tokens
+        )
+
+        # Move to appropriate device
+        if self.device != "cpu":
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        # Check token limits
+        input_length = inputs["input_ids"].shape[1]
+        if input_length + config.max_tokens > self.config.model.max_sequence_length:
+            raise TokenLimitExceededError(f"Total tokens exceed max sequence length")
+
+        try:
+            # Create streamer
+            streamer = TextIteratorStreamer(
+                self.tokenizer,
+                timeout=self.config.generation.generation_timeout_seconds,
+                skip_prompt=True,
+                skip_special_tokens=True
             )
-            
-            # Get hidden states from the model
-            outputs = self.model(**inputs, output_hidden_states=True)
-            
-            # Extract multimodal embedding from the last layer
-            last_hidden_state = outputs.hidden_states[-1]  # Shape: (1, seq_len, hidden_size)
-            
-            # Use mean pooling over sequence length to get unified embedding
-            embedding = last_hidden_state.mean(dim=1)  # Shape: (1, hidden_size)
-            
-            return embedding.cpu().numpy()
+
+            generation_kwargs = {
+                **inputs,
+                "max_new_tokens": config.max_tokens,
+                "temperature": config.temperature,
+                "top_p": config.top_p,
+                "top_k": config.top_k,
+                "repetition_penalty": config.repetition_penalty,
+                "do_sample": True,
+                "pad_token_id": self.tokenizer.eos_token_id,
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "streamer": streamer
+            }
+
+            # Start generation in thread
+            thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+            thread.start()
+
+            # Stream tokens
+            for new_text in streamer:
+                if new_text:
+                    yield new_text
+                    # Small delay to prevent overwhelming the client
+                    await asyncio.sleep(0.01)
+
+            thread.join()
+
+        except Exception as e:
+            logger.error(f"Streaming generation failed: {e}")
+            raise GenerationError(f"Streaming generation failed: {e}")
+    
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        config: GenerationConfig
+    ) -> str:
+        """
+        Generate chat response for conversation
+
+        Args:
+            messages: List of conversation messages with 'role' and 'content'
+            config: Generation configuration
+
+        Returns:
+            Generated chat response
+        """
+        if not self.is_ready():
+            raise ModelNotReadyError("Model not loaded. Call load_model() first.")
+
+        logger.debug(f"Generating chat response for {len(messages)} messages")
+
+        # Format chat messages into prompt
+        formatted_prompt = self._format_chat_messages(messages)
+
+        # Add reasoning level instruction
+        reasoning_instruction = self.reasoning_prompts.get(config.reasoning_level, self.reasoning_prompts[ReasoningLevel.MEDIUM])
+        full_prompt = f"{reasoning_instruction}\n\n{formatted_prompt}"
+
+        # Generate response using the chat prompt
+        response = await self.generate(full_prompt, config)
+
+        return response
     
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information and performance metrics"""
@@ -325,20 +474,28 @@ class OpsMMEmbeddingMLX:
             "load_time": self.load_time,
             "memory_usage_gb": self.memory_usage,
             "model_loaded": self.model is not None,
-            "embedding_dim": 3584,  # Qwen2VL hidden dimension
-            "architecture": "Qwen2VLForConditionalGeneration",
-            "supported_modalities": ["text", "image", "multimodal"]
+            "parameters": "21B",  # GPT-OSS-20B parameters
+            "architecture": "AutoModelForCausalLM",
+            "supported_capabilities": ["text_generation", "chat", "streaming", "reasoning_levels"],
+            "max_sequence_length": self.config.model.max_sequence_length,
+            "reasoning_levels": list(self.reasoning_prompts.keys())
         }
     
     def is_ready(self) -> bool:
         """Check if model is loaded and ready for inference"""
-        return (self.model is not None and 
-                self.tokenizer is not None and 
-                self.processor is not None)
+        return (self.model is not None and
+                self.tokenizer is not None)
+
+    def get_memory_usage(self) -> float:
+        """Get current memory usage in GB"""
+        return self._get_memory_usage()
     
     def __del__(self):
         """Cleanup resources"""
         if self.model is not None:
-            logger.info("Cleaning up MLX model resources")
+            logger.info("Cleaning up GPT-OSS-20B model resources")
             del self.model
-            mx.metal.clear_cache()
+            if hasattr(mx, 'metal'):
+                mx.metal.clear_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()

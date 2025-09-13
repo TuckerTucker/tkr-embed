@@ -1,5 +1,5 @@
 """
-Authentication and authorization middleware for MLX embedding server
+Authentication and authorization middleware for MLX generation server
 """
 
 import hashlib
@@ -293,7 +293,7 @@ def get_client_ip(request: Request) -> str:
 def create_api_key(name: str, permissions: List[str] = None, expires_in_days: int = None) -> str:
     """Create a new API key (utility function)"""
     if permissions is None:
-        permissions = ["embed:text", "embed:image", "embed:multimodal"]
+        permissions = ["generate:text", "generate:chat", "generate:stream"]
     
     return api_key_manager.create_key(name, permissions, expires_in_days)
 

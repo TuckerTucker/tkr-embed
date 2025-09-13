@@ -1,11 +1,12 @@
 """
-Configuration management for MLX embedding server
+Configuration management for MLX text generation server
 Supports environment variables, config files, and runtime configuration
 """
 
 import os
 import json
 import logging
+import psutil
 from typing import Dict, Any, Optional, List, Union
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -36,13 +37,40 @@ class ServerConfig:
 
 @dataclass
 class ModelConfig:
-    """Model configuration"""
-    model_path: str = "OpenSearch-AI/Ops-MM-embedding-v1-7B"
+    """Model configuration for text generation"""
+    model_path: str = "openai/gpt-oss-20b"
     quantization: str = "auto"  # auto, q4, q8, none
     cache_dir: str = "./models"
     device: str = "auto"  # auto, cpu, gpu
-    max_sequence_length: int = 2048
+    max_sequence_length: int = 8192
     trust_remote_code: bool = True
+
+    # Text generation specific settings
+    max_tokens: int = 4096
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 50
+    repetition_penalty: float = 1.1
+
+    # Reasoning configuration
+    reasoning_levels: Dict[str, int] = field(default_factory=lambda: {
+        "basic": 1,
+        "detailed": 3,
+        "deep": 5,
+        "expert": 7
+    })
+    default_reasoning_level: str = "detailed"
+
+    # Memory management for 21B model
+    gpu_memory_fraction: float = 0.85
+    cpu_memory_limit_gb: Optional[int] = None  # Auto-detect based on system
+
+    def __post_init__(self):
+        """Auto-configure memory settings based on system resources"""
+        if self.cpu_memory_limit_gb is None:
+            # Auto-detect and set conservative memory limit
+            total_memory_gb = psutil.virtual_memory().total / (1024**3)
+            self.cpu_memory_limit_gb = int(total_memory_gb * 0.7)  # Use 70% of available RAM
 
 
 @dataclass
@@ -67,12 +95,63 @@ class RateLimitConfig:
 
 
 @dataclass
+class GenerationConfig:
+    """Text generation specific configuration"""
+    streaming_enabled: bool = True
+    streaming_chunk_size: int = 256
+    generation_timeout_seconds: int = 300
+    max_concurrent_generations: int = 10
+    enable_chat_mode: bool = True
+    enable_completion_mode: bool = True
+
+    # Token limits and safety
+    max_total_tokens: int = 8192  # Combined prompt + completion
+    safety_filter_enabled: bool = True
+    content_filter_threshold: float = 0.8
+
+
+@dataclass
+class QuantizationConfig:
+    """Advanced quantization configuration for 21B model"""
+    auto_quantization_enabled: bool = True
+    memory_thresholds: Dict[str, int] = field(default_factory=lambda: {
+        "q4": 16,    # Use Q4 if less than 16GB RAM
+        "q8": 32,    # Use Q8 if less than 32GB RAM
+        "none": 64   # No quantization if 64GB+ RAM
+    })
+
+    # Model-specific quantization settings
+    q4_group_size: int = 128
+    q8_group_size: int = 256
+    calibration_dataset_size: int = 512
+
+    def get_recommended_quantization(self) -> str:
+        """Get recommended quantization based on system memory"""
+        if not self.auto_quantization_enabled:
+            return "none"
+
+        available_memory_gb = psutil.virtual_memory().available / (1024**3)
+
+        if available_memory_gb < self.memory_thresholds["q4"]:
+            return "q4"
+        elif available_memory_gb < self.memory_thresholds["q8"]:
+            return "q8"
+        else:
+            return "none"
+
+
+@dataclass
 class CacheConfig:
-    """Caching configuration"""
+    """Caching configuration optimized for generation workloads"""
     enabled: bool = True
-    max_size: int = 1000
-    ttl_seconds: int = 3600
+    max_size: int = 500  # Reduced for generation responses
+    ttl_seconds: int = 1800  # Shorter TTL for dynamic content
     cleanup_interval_seconds: int = 300
+
+    # Generation-specific caching
+    cache_completions: bool = True
+    cache_reasoning_steps: bool = False  # Don't cache reasoning for freshness
+    max_response_cache_size_kb: int = 100  # Max size of cached responses
 
 
 @dataclass
@@ -104,6 +183,8 @@ class Config:
     # Component configurations
     server: ServerConfig = field(default_factory=ServerConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
+    quantization: QuantizationConfig = field(default_factory=QuantizationConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
@@ -121,16 +202,23 @@ class Config:
             self.server.reload = False
             self.security.require_https = True
             self.logging.level = "WARNING"
+            self.generation.safety_filter_enabled = True
+            self.generation.max_concurrent_generations = 20
         elif self.environment == Environment.DEVELOPMENT:
             self.debug = True
             self.server.reload = True
             self.security.require_https = False
             self.logging.level = "DEBUG"
+            self.generation.safety_filter_enabled = False
+            self.generation.max_concurrent_generations = 5
         elif self.environment == Environment.TESTING:
             self.debug = True
             self.server.port = 8001  # Different port for testing
             self.cache.enabled = False  # Disable cache for consistent tests
             self.rate_limit.enabled = False  # Disable rate limiting for tests
+            self.generation.safety_filter_enabled = False
+            self.generation.max_concurrent_generations = 2
+            self.generation.generation_timeout_seconds = 60
 
 
 class ConfigManager:
@@ -144,62 +232,74 @@ class ConfigManager:
         """Load configuration from environment variables"""
         
         # Environment
-        if env := os.getenv("EMBEDDING_ENV"):
+        if env := os.getenv("GENERATION_ENV"):
             try:
                 self.config.environment = Environment(env.lower())
             except ValueError:
                 logger.warning(f"Invalid environment: {env}")
-        
+
         # Debug mode
-        if debug := os.getenv("EMBEDDING_DEBUG"):
+        if debug := os.getenv("GENERATION_DEBUG"):
             self.config.debug = debug.lower() in ("true", "1", "yes")
         
         # Server configuration
-        if host := os.getenv("EMBEDDING_HOST"):
+        if host := os.getenv("GENERATION_HOST"):
             self.config.server.host = host
-        if port := os.getenv("EMBEDDING_PORT"):
+        if port := os.getenv("GENERATION_PORT"):
             self.config.server.port = int(port)
-        if workers := os.getenv("EMBEDDING_WORKERS"):
+        if workers := os.getenv("GENERATION_WORKERS"):
             self.config.server.workers = int(workers)
-        if log_level := os.getenv("EMBEDDING_LOG_LEVEL"):
+        if log_level := os.getenv("GENERATION_LOG_LEVEL"):
             self.config.server.log_level = log_level.upper()
         
         # Model configuration
-        if model_path := os.getenv("EMBEDDING_MODEL_PATH"):
+        if model_path := os.getenv("GENERATION_MODEL_PATH"):
             self.config.model.model_path = model_path
-        if quantization := os.getenv("EMBEDDING_QUANTIZATION"):
+        if quantization := os.getenv("GENERATION_QUANTIZATION"):
             self.config.model.quantization = quantization
-        if cache_dir := os.getenv("EMBEDDING_CACHE_DIR"):
+        if cache_dir := os.getenv("GENERATION_CACHE_DIR"):
             self.config.model.cache_dir = cache_dir
-        if device := os.getenv("EMBEDDING_DEVICE"):
+        if device := os.getenv("GENERATION_DEVICE"):
             self.config.model.device = device
+        if max_tokens := os.getenv("GENERATION_MAX_TOKENS"):
+            self.config.model.max_tokens = int(max_tokens)
+        if temperature := os.getenv("GENERATION_TEMPERATURE"):
+            self.config.model.temperature = float(temperature)
+
+        # Generation configuration
+        if streaming := os.getenv("GENERATION_STREAMING_ENABLED"):
+            self.config.generation.streaming_enabled = streaming.lower() in ("true", "1", "yes")
+        if timeout := os.getenv("GENERATION_TIMEOUT"):
+            self.config.generation.generation_timeout_seconds = int(timeout)
+        if max_concurrent := os.getenv("GENERATION_MAX_CONCURRENT"):
+            self.config.generation.max_concurrent_generations = int(max_concurrent)
         
         # Security configuration
-        if require_https := os.getenv("EMBEDDING_REQUIRE_HTTPS"):
+        if require_https := os.getenv("GENERATION_REQUIRE_HTTPS"):
             self.config.security.require_https = require_https.lower() in ("true", "1", "yes")
-        if cors_origins := os.getenv("EMBEDDING_CORS_ORIGINS"):
+        if cors_origins := os.getenv("GENERATION_CORS_ORIGINS"):
             self.config.security.cors_origins = cors_origins.split(",")
         
         # Rate limiting
-        if rate_limit_enabled := os.getenv("EMBEDDING_RATE_LIMIT_ENABLED"):
+        if rate_limit_enabled := os.getenv("GENERATION_RATE_LIMIT_ENABLED"):
             self.config.rate_limit.enabled = rate_limit_enabled.lower() in ("true", "1", "yes")
-        if rpm := os.getenv("EMBEDDING_RATE_LIMIT_RPM"):
+        if rpm := os.getenv("GENERATION_RATE_LIMIT_RPM"):
             self.config.rate_limit.requests_per_minute = int(rpm)
-        if rph := os.getenv("EMBEDDING_RATE_LIMIT_RPH"):
+        if rph := os.getenv("GENERATION_RATE_LIMIT_RPH"):
             self.config.rate_limit.requests_per_hour = int(rph)
         
         # Cache configuration
-        if cache_enabled := os.getenv("EMBEDDING_CACHE_ENABLED"):
+        if cache_enabled := os.getenv("GENERATION_CACHE_ENABLED"):
             self.config.cache.enabled = cache_enabled.lower() in ("true", "1", "yes")
-        if cache_size := os.getenv("EMBEDDING_CACHE_SIZE"):
+        if cache_size := os.getenv("GENERATION_CACHE_SIZE"):
             self.config.cache.max_size = int(cache_size)
-        if cache_ttl := os.getenv("EMBEDDING_CACHE_TTL"):
+        if cache_ttl := os.getenv("GENERATION_CACHE_TTL"):
             self.config.cache.ttl_seconds = int(cache_ttl)
         
         # Logging configuration
-        if log_file := os.getenv("EMBEDDING_LOG_FILE"):
+        if log_file := os.getenv("GENERATION_LOG_FILE"):
             self.config.logging.file_path = log_file
-        if log_format := os.getenv("EMBEDDING_LOG_FORMAT"):
+        if log_format := os.getenv("GENERATION_LOG_FORMAT"):
             self.config.logging.json_format = log_format.lower() == "json"
         
         self._config_sources.append("environment")
@@ -265,6 +365,20 @@ class ConfigManager:
             for key, value in model_data.items():
                 if hasattr(self.config.model, key):
                     setattr(self.config.model, key, value)
+
+        # Update generation config
+        if "generation" in data:
+            generation_data = data["generation"]
+            for key, value in generation_data.items():
+                if hasattr(self.config.generation, key):
+                    setattr(self.config.generation, key, value)
+
+        # Update quantization config
+        if "quantization" in data:
+            quantization_data = data["quantization"]
+            for key, value in quantization_data.items():
+                if hasattr(self.config.quantization, key):
+                    setattr(self.config.quantization, key, value)
         
         # Update security config
         if "security" in data:
@@ -333,7 +447,34 @@ class ConfigManager:
                 "cache_dir": self.config.model.cache_dir,
                 "device": self.config.model.device,
                 "max_sequence_length": self.config.model.max_sequence_length,
-                "trust_remote_code": self.config.model.trust_remote_code
+                "trust_remote_code": self.config.model.trust_remote_code,
+                "max_tokens": self.config.model.max_tokens,
+                "temperature": self.config.model.temperature,
+                "top_p": self.config.model.top_p,
+                "top_k": self.config.model.top_k,
+                "repetition_penalty": self.config.model.repetition_penalty,
+                "reasoning_levels": self.config.model.reasoning_levels,
+                "default_reasoning_level": self.config.model.default_reasoning_level,
+                "gpu_memory_fraction": self.config.model.gpu_memory_fraction,
+                "cpu_memory_limit_gb": self.config.model.cpu_memory_limit_gb
+            },
+            "generation": {
+                "streaming_enabled": self.config.generation.streaming_enabled,
+                "streaming_chunk_size": self.config.generation.streaming_chunk_size,
+                "generation_timeout_seconds": self.config.generation.generation_timeout_seconds,
+                "max_concurrent_generations": self.config.generation.max_concurrent_generations,
+                "enable_chat_mode": self.config.generation.enable_chat_mode,
+                "enable_completion_mode": self.config.generation.enable_completion_mode,
+                "max_total_tokens": self.config.generation.max_total_tokens,
+                "safety_filter_enabled": self.config.generation.safety_filter_enabled,
+                "content_filter_threshold": self.config.generation.content_filter_threshold
+            },
+            "quantization": {
+                "auto_quantization_enabled": self.config.quantization.auto_quantization_enabled,
+                "memory_thresholds": self.config.quantization.memory_thresholds,
+                "q4_group_size": self.config.quantization.q4_group_size,
+                "q8_group_size": self.config.quantization.q8_group_size,
+                "calibration_dataset_size": self.config.quantization.calibration_dataset_size
             },
             "security": {
                 "require_api_key": self.config.security.require_api_key,
@@ -354,7 +495,10 @@ class ConfigManager:
                 "enabled": self.config.cache.enabled,
                 "max_size": self.config.cache.max_size,
                 "ttl_seconds": self.config.cache.ttl_seconds,
-                "cleanup_interval_seconds": self.config.cache.cleanup_interval_seconds
+                "cleanup_interval_seconds": self.config.cache.cleanup_interval_seconds,
+                "cache_completions": self.config.cache.cache_completions,
+                "cache_reasoning_steps": self.config.cache.cache_reasoning_steps,
+                "max_response_cache_size_kb": self.config.cache.max_response_cache_size_kb
             },
             "logging": {
                 "level": self.config.logging.level,
@@ -406,11 +550,11 @@ config_file_paths = [
     "config.dev.yaml",      # Development-specific config
     "config.dev.yml",
     "config.yaml",          # Production config
-    "config.yml", 
+    "config.yml",
     "config.json",
-    ".config/embedding-server.yaml",
-    ".config/embedding-server.yml",
-    os.path.expanduser("~/.config/embedding-server.yaml")
+    ".config/generation-server.yaml",
+    ".config/generation-server.yml",
+    os.path.expanduser("~/.config/generation-server.yaml")
 ]
 
 for config_path in config_file_paths:

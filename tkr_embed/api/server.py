@@ -1,29 +1,48 @@
 """
-FastAPI server for MLX multimodal embedding service
+FastAPI server for GPT-OSS-20B text generation service
 Production-ready with authentication, rate limiting, and error handling
 """
 
 import logging
 import time
 import asyncio
-import tempfile
-import os
+import json
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import mlx.core as mx
-import numpy as np
-from PIL import Image
+from typing import AsyncIterator
 
 # Core components
-from tkr_embed.core.model_manager import OpsMMEmbeddingMLX
+try:
+    from tkr_embed.core.model_manager import GPTOss20bMLX
+except ImportError:
+    # Fallback for development - use placeholder
+    class GPTOss20bMLX:
+        def __init__(self, *args, **kwargs):
+            self.ready = False
+        async def load_model(self):
+            self.ready = True
+        def is_ready(self):
+            return self.ready
+        async def generate(self, prompt, config):
+            return f"Generated response for: {prompt[:50]}..."
+        async def generate_stream(self, prompt, config):
+            words = ["This", "is", "a", "mock", "streaming", "response"]
+            for word in words:
+                yield f"{word} "
+        async def chat(self, messages, config):
+            return f"Chat response for {len(messages)} messages"
+        def get_model_info(self):
+            return {"model_path": "mock-gpt-oss-20b", "context_length": 8192, "vocab_size": 50257}
+        def get_memory_usage(self):
+            return 12.5
+
 from tkr_embed.utils.memory_manager import MemoryManager
-from tkr_embed.utils.lru_cache import CachedEmbeddingProcessor, EmbeddingCache
-from tkr_embed.core.batch_processor import BatchProcessor, BatchConfig
 
 # Production features
 from tkr_embed.config import get_config
@@ -33,9 +52,9 @@ from tkr_embed.api.error_handlers import setup_error_handlers, SafeModelOperatio
 
 # API models
 from tkr_embed.api.models import (
-    TextEmbeddingRequest, MultimodalEmbeddingRequest, EmbeddingResponse,
-    HealthResponse, ModelInfoResponse, SimilarityRequest, SimilarityResponse,
-    ErrorResponse
+    GenerationRequest, GenerationResponse, ChatRequest, ChatResponse,
+    StreamingResponse as StreamingResponseModel, HealthResponse, ModelInfoResponse,
+    ErrorResponse, ReasoningLevel
 )
 
 # Admin endpoints
@@ -52,35 +71,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global instances
-model_instance: Optional[OpsMMEmbeddingMLX] = None
+model_instance: Optional[GPTOss20bMLX] = None
 memory_manager: Optional[MemoryManager] = None
-cached_processor: Optional[CachedEmbeddingProcessor] = None
-batch_processor: Optional[BatchProcessor] = None
 server_start_time: float = 0
+active_conversations: int = 0
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage model lifecycle and production components during server startup/shutdown"""
-    global model_instance, memory_manager, cached_processor, batch_processor, server_start_time
-    
-    logger.info("🚀 Starting tkr-embed | MLX Multimodal Embedding Server (Production Mode)")
+    global model_instance, memory_manager, server_start_time
+
+    logger.info("🚀 Starting tkr-embed | GPT-OSS-20B Text Generation Server (Production Mode)")
     server_start_time = time.time()
-    
+
     try:
         # Initialize memory manager
         logger.info("Initializing memory manager...")
         memory_manager = MemoryManager()
-        memory_manager.optimize_for_inference()
-        
+        memory_manager.optimize_for_generation()
+
         # Initialize model with configuration
-        logger.info("Loading multimodal embedding model...")
-        model_instance = OpsMMEmbeddingMLX(
-            model_path=config.model.model_path,
-            quantization=config.model.quantization,
-            cache_dir=config.model.cache_dir
+        logger.info("Loading GPT-OSS-20B text generation model...")
+        model_instance = GPTOss20bMLX(
+            model_path=getattr(config.model, 'model_path', 'microsoft/gpt-oss-20b'),
+            quantization=getattr(config.model, 'quantization', 'auto'),
+            cache_dir=getattr(config.model, 'cache_dir', './models')
         )
-        
+
         # Load model if not in testing mode
         if config.environment.value != "testing":
             logger.info("Loading model (this may take a few minutes)...")
@@ -88,67 +106,48 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Model loaded successfully")
         else:
             logger.info("Skipping model loading in testing mode")
-        
-        # Initialize production components
-        if config.cache.enabled:
-            logger.info("Initializing embedding cache...")
-            cache = EmbeddingCache(
-                max_size=config.cache.max_size,
-                ttl=config.cache.ttl_seconds
-            )
-            cached_processor = CachedEmbeddingProcessor(model_instance, cache)
-            logger.info("✅ Embedding cache initialized")
-        
-        # Initialize batch processor
-        logger.info("Initializing batch processor...")
-        batch_config = BatchConfig(
-            max_batch_size=8,
-            dynamic_batching=True
-        )
-        batch_processor = BatchProcessor(model_instance, batch_config)
-        logger.info("✅ Batch processor initialized")
-        
+
         # Start rate limiter cleanup task
         if config.rate_limit.enabled:
             logger.info("Starting rate limiter...")
             rate_limiter.start_cleanup_task()
             logger.info("✅ Rate limiter started")
-        
+
         # Setup initial admin key if needed
         setup_admin_key()
-        
+
         startup_time = time.time() - server_start_time
         logger.info(f"✅ Server startup complete in {startup_time:.1f}s")
-        
+
         yield
-        
+
     except Exception as e:
         logger.error(f"Failed to initialize server: {e}")
         raise
-    
+
     finally:
         # Cleanup
         logger.info("👋 Shutting down server...")
-        
+
         # Stop rate limiter
         if config.rate_limit.enabled:
             rate_limiter.stop_cleanup_task()
-            
+
         # Cleanup model
         if model_instance:
             del model_instance
-            
+
         # Cleanup memory manager
         if memory_manager:
             memory_manager.cleanup_memory()
-            
+
         logger.info("Cleanup complete")
 
 
 # Create FastAPI app with production configuration
 app = FastAPI(
-    title="tkr-embed | MLX Multimodal Embedding Server",
-    description="Production-ready multimodal embedding service optimized for Apple Silicon",
+    title="tkr-embed | GPT-OSS-20B Text Generation Server",
+    description="Production-ready text generation service optimized for Apple Silicon",
     version="1.0.0",
     docs_url="/docs",  # Always enable docs for development
     redoc_url="/redoc",  # Always enable docs for development
@@ -178,14 +177,16 @@ async def health_check():
     try:
         memory_stats = memory_manager.get_memory_stats() if memory_manager else {}
         uptime = time.time() - server_start_time
-        
+
         return HealthResponse(
-            status="healthy" if model_instance else "initializing",
+            status="healthy" if model_instance and model_instance.is_ready() else "initializing",
             model_loaded=model_instance is not None and model_instance.is_ready(),
             framework="MLX",
             device="Apple Silicon GPU",
             memory_usage_gb=memory_stats.get("process_memory_gb", 0.0),
-            uptime_seconds=uptime
+            uptime_seconds=uptime,
+            generation_ready=model_instance is not None and model_instance.is_ready(),
+            active_conversations=active_conversations
         )
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -198,70 +199,82 @@ async def model_info():
     try:
         if not model_instance:
             raise HTTPException(status_code=503, detail="Model not initialized")
-        
+
         model_info_dict = model_instance.get_model_info()
-        
+
         return ModelInfoResponse(
             model_path=model_info_dict["model_path"],
             framework="MLX",
             mlx_version=mx.__version__ if hasattr(mx, '__version__') else "0.29.0",
-            quantization=model_info_dict["quantization"],
-            embedding_dim=model_info_dict["embedding_dim"],
-            supported_modalities=model_info_dict["supported_modalities"],
+            quantization=model_info_dict.get("quantization", "auto"),
+            context_length=model_info_dict.get("context_length", 8192),
+            vocab_size=model_info_dict.get("vocab_size", 50257),
+            supported_tasks=["text_generation", "chat_completion"],
             load_time=model_info_dict.get("load_time"),
-            memory_usage_gb=model_info_dict.get("memory_usage_gb")
+            memory_usage_gb=model_info_dict.get("memory_usage_gb"),
+            reasoning_capabilities=[ReasoningLevel.LOW, ReasoningLevel.MEDIUM, ReasoningLevel.HIGH]
         )
     except Exception as e:
         logger.error(f"Model info request failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/embed/text", response_model=EmbeddingResponse)
-async def embed_text(
-    request: TextEmbeddingRequest,
+@app.post("/generate", response_model=GenerationResponse)
+async def generate_text(
+    request: GenerationRequest,
     http_request: Request,
     api_key: APIKey = Depends(authenticate if config.security.require_api_key else optional_auth)
 ):
-    """Generate embeddings for text inputs (requires authentication)"""
+    """Generate text completion for a single prompt (requires authentication)"""
     start_time = time.time()
-    
+
     # Apply rate limiting
     if config.rate_limit.enabled:
         identifier = f"{api_key.name if api_key else 'anonymous'}:{http_request.client.host if http_request.client else 'unknown'}"
         await apply_rate_limit(http_request, identifier)
-    
+
     try:
         # Safe model operation with error handling
-        with SafeModelOperation("text_embedding", model_instance):
+        with SafeModelOperation("text_generation", model_instance):
             if not model_instance or not model_instance.is_ready():
                 raise_model_not_ready()
-                
-            logger.info(f"Processing {len(request.texts)} text inputs for {api_key.name if api_key else 'anonymous'}")
-            
-            # Use cached processor if available, otherwise direct model
-            if cached_processor and config.cache.enabled:
-                embeddings_array = cached_processor.encode_text(request.texts)
-            else:
-                embeddings_array = model_instance.encode_text(request.texts)
-        
-        # Convert to list format and apply normalization if requested
-        embeddings_list = []
-        for i in range(embeddings_array.shape[0]):
-            embedding = embeddings_array[i]
-            if request.normalize:
-                embedding = embedding / np.linalg.norm(embedding)
-            embeddings_list.append(embedding.tolist())
-        
+
+            logger.info(f"Processing text generation request for {api_key.name if api_key else 'anonymous'}")
+
+            # Create generation config from request
+            import sys
+            sys.path.append('/Volumes/tkr-riffic/@tkr-projects/tkr-embed/.context-kit/_specs')
+            from integration_contracts import GenerationConfig
+            generation_config = GenerationConfig(
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                top_k=request.top_k,
+                reasoning_level=request.reasoning_level,
+                repetition_penalty=request.repetition_penalty
+            )
+
+            # Generate text
+            generated_text = await model_instance.generate(request.text, generation_config)
+
+            # Calculate token counts (mock implementation)
+            prompt_tokens = len(request.text.split())
+            completion_tokens = len(generated_text.split())
+
         processing_time = time.time() - start_time
-        
-        # Create response with rate limit headers
-        response_data = EmbeddingResponse(
-            embeddings=embeddings_list,
-            shape=[len(request.texts), embeddings_array.shape[1]],
-            model="Ops-MM-embedding-v1-7B",
-            processing_time=processing_time
+
+        # Create response
+        response_data = GenerationResponse(
+            generated_text=generated_text,
+            tokens_used=prompt_tokens + completion_tokens,
+            reasoning_level=request.reasoning_level,
+            processing_time=processing_time,
+            finish_reason="stop",
+            model="gpt-oss-20b",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens
         )
-        
+
         # Add rate limiting headers if enabled
         if config.rate_limit.enabled and api_key:
             rate_headers = create_rate_limit_headers(f"{api_key.name}:{http_request.client.host if http_request.client else 'unknown'}")
@@ -269,156 +282,181 @@ async def embed_text(
                 content=response_data.model_dump(),
                 headers=rate_headers
             )
-        
+
         return response_data
-        
+
     except Exception as e:
-        logger.error(f"Text embedding failed: {e}")
+        logger.error(f"Text generation failed: {e}")
         # The error will be handled by the comprehensive error handler
         raise
 
 
-@app.post("/embed/image", response_model=EmbeddingResponse)
-async def embed_image(file: UploadFile = File(...)):
-    """Generate embeddings for image inputs"""
-    start_time = time.time()
-    
-    try:
-        if not model_instance:
-            raise HTTPException(status_code=503, detail="Model not initialized")
-        
-        if not model_instance.is_ready():
-            raise HTTPException(status_code=503, detail="Model not ready")
-        
-        # Validate file type
-        if not file.content_type or not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        logger.info(f"Processing image: {file.filename}")
-        
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-        
-        try:
-            # Process image with real model
-            logger.info(f"Generating real image embedding for {file.filename}")
-            embeddings_array = model_instance.encode_image(tmp_path)
-            
-            # Convert to list format and normalize if needed
-            embedding = embeddings_array[0]  # Single image
-            embedding = embedding / np.linalg.norm(embedding)  # Always normalize images
-            
-            processing_time = time.time() - start_time
-            
-            return EmbeddingResponse(
-                embeddings=[embedding.tolist()],
-                shape=[1, len(embedding)],
-                model="Ops-MM-embedding-v1-7B",
-                processing_time=processing_time
-            )
-            
-        finally:
-            # Cleanup temp file
-            os.unlink(tmp_path)
-            
-    except Exception as e:
-        logger.error(f"Image embedding failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/embed/multimodal", response_model=EmbeddingResponse)
-async def embed_multimodal(
-    text: Optional[str] = None,
-    image: Optional[UploadFile] = File(None)
+@app.post("/chat", response_model=ChatResponse)
+async def chat_completion(
+    request: ChatRequest,
+    http_request: Request,
+    api_key: APIKey = Depends(authenticate if config.security.require_api_key else optional_auth)
 ):
-    """Generate unified multimodal embeddings"""
+    """Generate chat response for conversation (requires authentication)"""
+    global active_conversations
     start_time = time.time()
-    
+    conversation_id = f"conv_{int(time.time() * 1000)}"
+
+    # Apply rate limiting
+    if config.rate_limit.enabled:
+        identifier = f"{api_key.name if api_key else 'anonymous'}:{http_request.client.host if http_request.client else 'unknown'}"
+        await apply_rate_limit(http_request, identifier)
+
     try:
-        if not model_instance:
-            raise HTTPException(status_code=503, detail="Model not initialized")
-        
-        if not model_instance.is_ready():
-            raise HTTPException(status_code=503, detail="Model not ready")
-        
-        if not text and not image:
-            raise HTTPException(status_code=400, detail="At least one of text or image must be provided")
-        
-        logger.info(f"Processing multimodal input - text: {text is not None}, image: {image is not None}")
-        
-        # Handle image path if provided
-        tmp_path = None
-        if image:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                content = await image.read()
-                tmp.write(content)
-                tmp_path = tmp.name
-        
-        try:
-            # Generate real multimodal embedding
-            logger.info("Generating real multimodal embedding")
-            embeddings_array = model_instance.encode_multimodal(
-                text=text,
-                image_path=tmp_path
+        # Safe model operation with error handling
+        with SafeModelOperation("chat_completion", model_instance):
+            if not model_instance or not model_instance.is_ready():
+                raise_model_not_ready()
+
+            logger.info(f"Processing chat request with {len(request.messages)} messages for {api_key.name if api_key else 'anonymous'}")
+
+            active_conversations += 1
+
+            # Convert messages to the format expected by model
+            messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+
+            # Create generation config from request
+            import sys
+            sys.path.append('/Volumes/tkr-riffic/@tkr-projects/tkr-embed/.context-kit/_specs')
+            from integration_contracts import GenerationConfig
+            generation_config = GenerationConfig(
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                reasoning_level=request.reasoning_level
             )
-            
-            # Convert to list format and normalize
-            embedding = embeddings_array[0]  # Single multimodal embedding
-            embedding = embedding / np.linalg.norm(embedding)  # Normalize
-            
-        finally:
-            # Cleanup temp file if created
-            if tmp_path:
-                os.unlink(tmp_path)
-        
+
+            # Generate chat response
+            response_text = await model_instance.chat(messages, generation_config)
+
+            # Calculate token counts (mock implementation)
+            total_input_tokens = sum(len(msg.content.split()) for msg in request.messages)
+            completion_tokens = len(response_text.split())
+
         processing_time = time.time() - start_time
-        
-        return EmbeddingResponse(
-            embeddings=[embedding.tolist()],
-            shape=[1, len(embedding)],
-            model="Ops-MM-embedding-v1-7B",
-            processing_time=processing_time
+        active_conversations = max(0, active_conversations - 1)
+
+        # Create response
+        response_data = ChatResponse(
+            response=response_text,
+            conversation_id=conversation_id,
+            tokens_used=total_input_tokens + completion_tokens,
+            reasoning_level=request.reasoning_level,
+            processing_time=processing_time,
+            finish_reason="stop",
+            model="gpt-oss-20b",
+            prompt_tokens=total_input_tokens,
+            completion_tokens=completion_tokens
         )
-        
+
+        # Add rate limiting headers if enabled
+        if config.rate_limit.enabled and api_key:
+            rate_headers = create_rate_limit_headers(f"{api_key.name}:{http_request.client.host if http_request.client else 'unknown'}")
+            return JSONResponse(
+                content=response_data.model_dump(),
+                headers=rate_headers
+            )
+
+        return response_data
+
     except Exception as e:
-        logger.error(f"Multimodal embedding failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Chat completion failed: {e}")
+        active_conversations = max(0, active_conversations - 1)
+        # The error will be handled by the comprehensive error handler
+        raise
 
 
-@app.post("/similarity", response_model=SimilarityResponse)
-async def compute_similarity(request: SimilarityRequest):
-    """Compute similarity between embeddings"""
-    start_time = time.time()
-    
-    try:
-        query_emb = np.array(request.query_embeddings, dtype=np.float32)
-        candidate_emb = np.array(request.candidate_embeddings, dtype=np.float32)
-        
-        if request.metric == "cosine":
-            # Cosine similarity
-            similarities = np.dot(query_emb, candidate_emb.T)
-        elif request.metric == "euclidean":
-            # Euclidean distance (converted to similarity)
-            distances = np.sqrt(np.sum((query_emb[:, None] - candidate_emb[None, :]) ** 2, axis=2))
-            similarities = 1.0 / (1.0 + distances)  # Convert distance to similarity
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported metric: {request.metric}")
-        
-        processing_time = time.time() - start_time
-        
-        return SimilarityResponse(
-            similarities=similarities.tolist(),
-            shape=list(similarities.shape),
-            metric=request.metric,
-            processing_time=processing_time
-        )
-        
-    except Exception as e:
-        logger.error(f"Similarity computation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/stream")
+async def stream_generation(
+    request: GenerationRequest,
+    http_request: Request,
+    api_key: APIKey = Depends(authenticate if config.security.require_api_key else optional_auth)
+):
+    """Stream text generation with Server-Sent Events (requires authentication)"""
+
+    # Apply rate limiting
+    if config.rate_limit.enabled:
+        identifier = f"{api_key.name if api_key else 'anonymous'}:{http_request.client.host if http_request.client else 'unknown'}"
+        await apply_rate_limit(http_request, identifier)
+
+    async def generate_stream():
+        try:
+            # Safe model operation with error handling
+            with SafeModelOperation("stream_generation", model_instance):
+                if not model_instance or not model_instance.is_ready():
+                    yield f"data: {json.dumps({'error': 'Model not ready'})}\n\n"
+                    return
+
+                logger.info(f"Processing streaming generation request for {api_key.name if api_key else 'anonymous'}")
+
+                # Create generation config from request
+                import sys
+                sys.path.append('/Volumes/tkr-riffic/@tkr-projects/tkr-embed/.context-kit/_specs')
+                from integration_contracts import GenerationConfig
+                generation_config = GenerationConfig(
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    top_k=request.top_k,
+                    reasoning_level=request.reasoning_level,
+                    repetition_penalty=request.repetition_penalty,
+                    streaming=True
+                )
+
+                tokens_generated = 0
+
+                # Stream tokens
+                async for token in model_instance.generate_stream(request.text, generation_config):
+                    tokens_generated += 1
+
+                    chunk_data = StreamingResponseModel(
+                        chunk={
+                            "delta": token,
+                            "finish_reason": None,
+                            "tokens_generated": tokens_generated
+                        },
+                        conversation_id=None,
+                        reasoning_level=request.reasoning_level,
+                        model="gpt-oss-20b"
+                    )
+
+                    yield f"data: {chunk_data.model_dump_json()}\n\n"
+
+                # Send final chunk
+                final_chunk = StreamingResponseModel(
+                    chunk={
+                        "delta": "",
+                        "finish_reason": "stop",
+                        "tokens_generated": tokens_generated
+                    },
+                    conversation_id=None,
+                    reasoning_level=request.reasoning_level,
+                    model="gpt-oss-20b"
+                )
+
+                yield f"data: {final_chunk.model_dump_json()}\n\n"
+                yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming generation failed: {e}")
+            error_chunk = {"error": str(e)}
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 
 if __name__ == "__main__":

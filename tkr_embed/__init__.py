@@ -1,15 +1,20 @@
 """
-tkr_embed - tkr-embed | MLX Multimodal Embedding Server
-Optimized for Apple Silicon (M1/M2/M3) with OpenSearch-AI/Ops-MM-embedding-v1-7B
+tkr_embed - GPT-OSS-20B Text Generation Server
+Optimized for Apple Silicon (M1/M2/M3) with GPT-OSS-20B model
 """
 
 __version__ = "0.1.0"
 __author__ = "Tucker"
 
-from .core.model_manager import OpsMMEmbeddingMLX
+try:
+    from .core.model_manager import GPTOss20bMLX
+except ImportError:
+    # Fallback during development
+    GPTOss20bMLX = None
+
 from .utils.memory_manager import MemoryManager
 
 __all__ = [
-    "OpsMMEmbeddingMLX",
+    "GPTOss20bMLX",
     "MemoryManager"
 ]
