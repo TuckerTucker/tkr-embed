@@ -40,11 +40,21 @@ class OpsMMEmbeddingMLX:
             cache_dir: Local model cache directory
         """
         logger.info(f"Initializing OpsMMEmbeddingMLX with model: {model_path}")
-        
+
         self.model_path = model_path
-        self.device = device
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
+
+        # Set up device - use MPS (Metal) if available on Apple Silicon
+        if torch.backends.mps.is_available() and device == "gpu":
+            self.device = torch.device("mps")
+            logger.info("Using Metal Performance Shaders (MPS) for GPU acceleration")
+        elif torch.cuda.is_available() and device == "gpu":
+            self.device = torch.device("cuda")
+            logger.info("Using CUDA for GPU acceleration")
+        else:
+            self.device = torch.device("cpu")
+            logger.info("Using CPU for inference")
         
         # Model components
         self.model = None
@@ -99,12 +109,30 @@ class OpsMMEmbeddingMLX:
             torch_dtype = torch.float16 if self.quantization != "none" else torch.float32
 
             # Load the embedding model
+            # First load to CPU, then move to target device
             self.model = AutoModel.from_pretrained(
                 self.model_path,
                 torch_dtype=torch_dtype,
                 trust_remote_code=True,
-                device_map="auto"
+                low_cpu_mem_usage=True  # Efficient loading
             )
+
+            # Move model to the target device (MPS/CUDA/CPU)
+            try:
+                self.model = self.model.to(self.device)
+                logger.info(f"Model moved to device: {self.device}")
+
+                # Test MPS if being used
+                if self.device.type == "mps":
+                    logger.info("Testing MPS device...")
+                    test_tensor = torch.ones(1, 10).to(self.device)
+                    _ = test_tensor * 2  # Simple operation to verify MPS works
+                    logger.info("MPS device test successful")
+            except Exception as mps_error:
+                logger.warning(f"Failed to use {self.device}: {mps_error}")
+                logger.info("Falling back to CPU")
+                self.device = torch.device("cpu")
+                self.model = self.model.to(self.device)
             
             logger.info("Model loaded successfully")
             
@@ -204,11 +232,26 @@ class OpsMMEmbeddingMLX:
 
         with torch.no_grad():
             for text in texts:
-                # Tokenize the text
-                inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+                try:
+                    # Tokenize the text
+                    inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
 
-                # Get embeddings from the model (no hidden_states needed for embedding models)
-                outputs = self.model(**inputs)
+                    # Move inputs to the same device as the model
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+                    # Get embeddings from the model (no hidden_states needed for embedding models)
+                    outputs = self.model(**inputs)
+                except RuntimeError as e:
+                    if "MPS" in str(e) or "mps" in str(e):
+                        logger.warning(f"MPS error encountered: {e}")
+                        logger.info("Retrying with CPU fallback for this batch")
+                        # Fallback to CPU for this specific computation
+                        inputs = {k: v.to('cpu') for k, v in inputs.items()}
+                        with torch.cuda.device('cpu'):
+                            outputs = self.model.cpu()(**inputs)
+                            self.model = self.model.to(self.device)  # Move back to original device
+                    else:
+                        raise
 
                 # For embedding models, use the pooler_output or last_hidden_state
                 if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
@@ -254,6 +297,13 @@ class OpsMMEmbeddingMLX:
                 # Process the image with the image processor
                 inputs = self.image_processor(image, return_tensors="pt")
 
+                # Move inputs to the same device as the model
+                if 'pixel_values' in inputs:
+                    inputs['pixel_values'] = inputs['pixel_values'].to(self.device)
+                else:
+                    # Move all tensor inputs to device
+                    inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
+
                 # Get embeddings from the model
                 outputs = self.model(**inputs)
 
@@ -297,12 +347,19 @@ class OpsMMEmbeddingMLX:
             # Process text input
             if text is not None:
                 text_inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+                # Move to the same device as the model
+                text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
                 inputs.update(text_inputs)
 
             # Process image input
             if image_path is not None:
                 image = Image.open(image_path).convert('RGB')
                 image_inputs = self.image_processor(image, return_tensors="pt")
+                # Move to the same device as the model
+                if 'pixel_values' in image_inputs:
+                    image_inputs['pixel_values'] = image_inputs['pixel_values'].to(self.device)
+                else:
+                    image_inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in image_inputs.items()}
                 inputs.update(image_inputs)
 
             # Get multimodal embeddings from the model
@@ -322,7 +379,7 @@ class OpsMMEmbeddingMLX:
         return {
             "model_path": self.model_path,
             "quantization": self.quantization,
-            "device": self.device,
+            "device": str(self.device),
             "load_time": self.load_time,
             "memory_usage_gb": self.memory_usage,
             "model_loaded": self.model is not None,
